@@ -1,0 +1,26 @@
+CREATE TABLE libraryManga (
+    id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    sourceId INTEGER NOT NULL,
+    packageName TEXT NOT NULL,
+    jarFileName TEXT NOT NULL,
+    extensionName TEXT NOT NULL,
+    mangaUrl TEXT NOT NULL,
+    title TEXT NOT NULL,
+    thumbnailUrl TEXT,
+    author TEXT,
+    addedAt INTEGER NOT NULL,
+    UNIQUE (sourceId, mangaUrl)
+);
+
+selectAll:
+SELECT * FROM libraryManga ORDER BY addedAt DESC;
+
+selectOne:
+SELECT * FROM libraryManga WHERE sourceId = ? AND mangaUrl = ?;
+
+insertOrReplace:
+INSERT OR REPLACE INTO libraryManga(sourceId, packageName, jarFileName, extensionName, mangaUrl, title, thumbnailUrl, author, addedAt)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+delete:
+DELETE FROM libraryManga WHERE sourceId = ? AND mangaUrl = ?;

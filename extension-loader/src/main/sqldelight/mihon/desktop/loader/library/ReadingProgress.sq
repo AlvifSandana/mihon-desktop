@@ -1,0 +1,16 @@
+CREATE TABLE readingProgress (
+    sourceId INTEGER NOT NULL,
+    mangaUrl TEXT NOT NULL,
+    chapterUrl TEXT NOT NULL,
+    chapterName TEXT NOT NULL,
+    pageIndex INTEGER NOT NULL,
+    updatedAt INTEGER NOT NULL,
+    PRIMARY KEY (sourceId, mangaUrl)
+);
+
+selectForManga:
+SELECT * FROM readingProgress WHERE sourceId = ? AND mangaUrl = ?;
+
+upsert:
+INSERT OR REPLACE INTO readingProgress(sourceId, mangaUrl, chapterUrl, chapterName, pageIndex, updatedAt)
+VALUES (?, ?, ?, ?, ?, ?);

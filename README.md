@@ -7,15 +7,20 @@ a plain JVM desktop app, without an Android runtime.
 
 **They can.** A Compose Desktop GUI browses the live keiyoushi catalog, installs an
 extension's real `.jar` (no Android SDK, emulator, or dex-to-JVM bridge involved), and
-reads manga through it: search a source, view a manga's chapter list, read a chapter.
+reads manga through it: search a source, add manga to a persistent library, view a
+manga's chapter list, read a chapter, resume where you left off.
 
 ```
 ./gradlew :app:run
 ```
 
-opens the window: an extension list (search/install from keiyoushi's ~1400 live
-extensions) → a source's popular/search manga grid → a manga's details and chapters → a
-page-by-page reader.
+opens on your **Library** — empty on first run, with a button to browse extensions.
+From there: an extension list (search/install from keiyoushi's ~1400 live extensions) →
+a source's popular/search manga grid → a manga's details and chapters (with an
+add-to-library toggle and a "Continue reading" card once you have progress) → a
+page-by-page reader. Everything you add to the library and every page you read is saved
+to a local sqlite database (`~/.mihon-desktop/library.db`) and survives restarting the
+app.
 
 ## Why this is possible — the short version
 
@@ -78,12 +83,12 @@ the end of [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 ## Status
 
 The extension-loading foundation is solid and the GUI covers the core loop end-to-end:
-browse the catalog, install an extension, browse/search a source, view a manga's
-chapters, read a chapter. Still missing: a persistent library/downloads/history (nothing
-survives closing the window except installed jars and preferences), reader zoom/pan,
-Cloudflare bypass, and packaged installers. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for
-the full picture and what's explicitly out of scope (this is not trying to become a
-general Android compatibility layer).
+browse the catalog, install an extension, add manga to a persistent library, view a
+manga's chapters, read a chapter and resume it later. Still missing: chapter downloads
+(offline reading), reader zoom/pan, background library updates, Cloudflare bypass, and
+packaged installers. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full picture and
+what's explicitly out of scope (this is not trying to become a general Android
+compatibility layer).
 
 ## Known gaps
 

@@ -11,11 +11,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -48,7 +50,7 @@ private val extensionCacheDir = File(System.getProperty("user.home"), ".mihon-de
 /** Browse and install extensions from the keiyoushi catalog. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CatalogScreen(onSourceSelected: (CatalogExtension, Source) -> Unit) {
+fun CatalogScreen(onSourceSelected: (CatalogExtension, Source) -> Unit, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     val client = remember { Injekt.get<NetworkHelper>().client }
     val catalogClient = remember { CatalogClient(client) }
@@ -101,7 +103,14 @@ fun CatalogScreen(onSourceSelected: (CatalogExtension, Source) -> Unit) {
     }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("Extensions") }) },
+        topBar = {
+            TopAppBar(
+                title = { Text("Extensions") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
+                },
+            )
+        },
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
             TextField(

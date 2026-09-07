@@ -30,21 +30,33 @@ manga reader yet. Rough phases, roughly in order:
   plugin) is wired into `app`, replacing the CLI entirely. `mihon.desktop.app.ui` has four
   screens with simple `remember { mutableStateOf<Screen>(...) }` navigation (no
   Voyager/Navigation library, no back stack beyond one level per screen type):
+  `LibraryScreen` (saved manga grid, the app's home screen),
   `CatalogScreen` (search/install from the live keiyoushi catalog),
   `SourceBrowseScreen` (popular/search grid for one loaded source),
   `MangaDetailScreen` (fetches details+chapters via `getMangaUpdate`), and `ReaderScreen`
   (fetches pages via `getPageList`, decodes bytes with `org.jetbrains.skia.Image`).
   Verified to launch and stay stable in a WSLg (`DISPLAY=:0`) session — Skiko falls back
   from GL to a software rasterizer there rather than crashing.
+- [x] Library persistence: `extension-loader`'s `mihon.desktop.loader.library` package
+  is a small SQLDelight schema (`~/.mihon-desktop/library.db`, plain JDBC driver — same
+  generated query code Android would use, just a different `SqlDriver` impl) with two
+  tables — `libraryManga` (which manga are saved, plus the `packageName`/`jarFileName` of
+  the extension that provides them, so reopening one reloads the cached jar with no
+  network/catalog fetch) and `readingProgress` (last chapter+page per manga, keyed by
+  `sourceId`+`mangaUrl`, updated on every page turn). `MangaDetailScreen` has a
+  favorite-toggle button and a "Continue reading" card when progress exists;
+  `LibraryScreen` is now the app's home screen.
 - [ ] `ReaderScreen` is intentionally minimal today: one page at a time, next/prev
   buttons, no zoom/pan/webtoon mode. Upstream's reader is built on
   `PhotoView`/`SubsamplingScaleImageView`, both Android-View-based with no desktop port —
   replacing this needs a real Compose Multiplatform pan/zoom image viewer (evaluate
   existing zoomable-image libraries before writing one from scratch).
-- [ ] Library/downloads persistence — a real `domain`/`data` layer (SQLDelight is already
-  multiplatform-capable; this is mostly a JDBC-driver-vs-Android-driver swap) instead of
-  the in-memory-only state this scaffold has today. Currently nothing survives closing the
-  window except the installed-extension jar cache and preferences files.
+- [ ] No downloads (offline chapter storage) yet — reading always streams from the
+  source live. Would reuse the same `libraryManga`/`readingProgress` tables plus a new
+  `downloadedChapters` table tracking on-disk page files.
+- [ ] Library screen has no manual refresh/"check for updates" — it only shows what's
+  saved, doesn't check sources for new chapters (that's Phase 3's background-updates
+  item).
 
 ## Phase 3 — platform integrations
 - [ ] Background library updates (replace `WorkManager` with a plain JVM scheduler).

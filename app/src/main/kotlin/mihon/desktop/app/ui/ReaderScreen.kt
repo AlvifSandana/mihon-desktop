@@ -34,6 +34,7 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
+import mihon.desktop.loader.library.LibraryRepository
 
 /**
  * A minimal single-page reader: fetches the current chapter's pages, shows one page at a
@@ -47,13 +48,17 @@ fun ReaderScreen(
     manga: SManga,
     chapters: List<SChapter>,
     initialChapterIndex: Int,
+    initialPageIndex: Int = 0,
     onBack: () -> Unit,
 ) {
     val httpSource = source as? HttpSource
+    val repository = remember { LibraryRepository() }
 
     var chapterIndex by remember { mutableStateOf(initialChapterIndex) }
     var pages by remember(chapterIndex) { mutableStateOf(listOf<Page>()) }
-    var pageIndex by remember(chapterIndex) { mutableStateOf(0) }
+    var pageIndex by remember(chapterIndex) {
+        mutableStateOf(if (chapterIndex == initialChapterIndex) initialPageIndex else 0)
+    }
     var loading by remember(chapterIndex) { mutableStateOf(true) }
     var error by remember(chapterIndex) { mutableStateOf<String?>(null) }
 
@@ -71,6 +76,17 @@ fun ReaderScreen(
                 .onFailure { error = it.message ?: it.toString() }
         }
         loading = false
+    }
+
+    LaunchedEffect(chapterIndex, pageIndex) {
+        val ch = chapter ?: return@LaunchedEffect
+        repository.saveProgress(
+            sourceId = source.id,
+            mangaUrl = manga.url,
+            chapterUrl = ch.url,
+            chapterName = ch.name,
+            pageIndex = pageIndex,
+        )
     }
 
     fun goToNextPage() {

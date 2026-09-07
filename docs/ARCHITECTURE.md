@@ -76,6 +76,21 @@ The desktop-specific part:
     verifying the result against keiyoushi's `release-assets.json` sha256 manifest
     (skipped, not blocking, if that manifest can't be fetched). A cached file that fails
     verification is deleted and re-downloaded rather than silently loaded.
+- `library/` — a SQLDelight schema (plugin applied directly to this module; `.sq` files
+  under `src/main/sqldelight/`) for the two things that need to survive closing the
+  window:
+  - `libraryManga` — which manga are saved, plus the `packageName`/`jarFileName` of the
+    extension that provides them (so reopening a library entry reloads that jar straight
+    from `~/.mihon-desktop/extension-cache/`, no catalog fetch needed), keyed on
+    `(sourceId, mangaUrl)`.
+  - `readingProgress` — last chapter + page read per manga, same key, upserted on every
+    page turn.
+  - `LibraryDatabase` opens `~/.mihon-desktop/library.db` via SQLDelight's plain JDBC
+    driver (`app.cash.sqldelight:sqlite-driver`) — the exact same generated
+    `MihonDesktopDatabase`/query code an Android build would get from the Android driver
+    instead; only the driver implementation differs.
+  - `LibraryRepository` wraps the generated queries in `suspend fun`s
+    (`Dispatchers.IO`-wrapped), the only thing `app` talks to.
 
 This mirrors Mihon's own `eu.kanade.tachiyomi.extension.util.ExtensionLoader` /
 `ExtensionStoreService`, with `PackageManager`/`DexClassLoader` swapped for

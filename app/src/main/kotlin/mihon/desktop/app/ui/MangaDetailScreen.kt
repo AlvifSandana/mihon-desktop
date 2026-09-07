@@ -13,6 +13,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -28,6 +32,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,6 +42,9 @@ import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
+import kotlinx.coroutines.launch
+import mihon.desktop.loader.library.LibraryRepository
+import mihon.desktop.loader.library.ReadingProgress
 import java.text.DateFormat
 import java.util.Date
 
@@ -44,19 +52,27 @@ import java.util.Date
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MangaDetailScreen(
+    extensionRef: ExtensionRef,
     source: Source,
     manga: SManga,
-    onChapterSelected: (List<SChapter>, Int) -> Unit,
+    onChapterSelected: (chapters: List<SChapter>, chapterIndex: Int, initialPageIndex: Int) -> Unit,
     onBack: () -> Unit,
 ) {
+    val scope = rememberCoroutineScope()
+    val repository = remember { LibraryRepository() }
+
     var detail by remember(manga) { mutableStateOf(manga) }
     var chapters by remember(manga) { mutableStateOf(listOf<SChapter>()) }
     var loading by remember(manga) { mutableStateOf(true) }
     var error by remember(manga) { mutableStateOf<String?>(null) }
+    var isFavorite by remember(manga) { mutableStateOf(false) }
+    var progress by remember(manga) { mutableStateOf<ReadingProgress?>(null) }
 
     LaunchedEffect(manga) {
         loading = true
         error = null
+        isFavorite = repository.isFavorite(source.id, manga.url)
+        progress = repository.progressFor(source.id, manga.url)
         runCatching {
             source.getMangaUpdate(manga, emptyList(), fetchDetails = true, fetchChapters = true)
         }.onSuccess { update ->
@@ -68,12 +84,41 @@ fun MangaDetailScreen(
         loading = false
     }
 
+    fun toggleFavorite() {
+        scope.launch {
+            if (isFavorite) {
+                repository.remove(source.id, manga.url)
+                isFavorite = false
+            } else {
+                repository.add(
+                    sourceId = source.id,
+                    packageName = extensionRef.packageName,
+                    jarFileName = extensionRef.jarFileName,
+                    extensionName = extensionRef.displayName,
+                    mangaUrl = detail.url,
+                    title = detail.title,
+                    thumbnailUrl = detail.thumbnail_url,
+                    author = detail.author,
+                )
+                isFavorite = true
+            }
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text(detail.title) },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
+                },
+                actions = {
+                    IconButton(onClick = ::toggleFavorite) {
+                        Icon(
+                            if (isFavorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                            contentDescription = if (isFavorite) "Remove from library" else "Add to library",
+                        )
+                    }
                 },
             )
         },
@@ -102,6 +147,27 @@ fun MangaDetailScreen(
                 )
             }
 
+            val savedProgress = progress
+            if (savedProgress != null) {
+                val chapterIndex = chapters.indexOfFirst { it.url == savedProgress.chapterUrl }
+                if (chapterIndex >= 0) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth().padding(8.dp)
+                            .clickable {
+                                onChapterSelected(chapters, chapterIndex, savedProgress.pageIndex.toInt())
+                            },
+                    ) {
+                        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                            Column(Modifier.padding(start = 8.dp)) {
+                                Text("Continue reading", style = MaterialTheme.typography.labelMedium)
+                                Text(savedProgress.chapterName, style = MaterialTheme.typography.bodyMedium)
+                            }
+                        }
+                    }
+                }
+            }
+
             HorizontalDivider()
 
             if (loading) {
@@ -119,7 +185,7 @@ fun MangaDetailScreen(
                                     Text(DateFormat.getDateInstance().format(Date(chapter.date_upload)))
                                 }
                             },
-                            modifier = Modifier.clickable { onChapterSelected(chapters, index) },
+                            modifier = Modifier.clickable { onChapterSelected(chapters, index, 0) },
                         )
                     }
                 }
