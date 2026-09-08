@@ -1,4 +1,5 @@
 import java.io.File
+import org.gradle.jvm.tasks.Jar
 
 plugins {
     alias(libs.plugins.kotlin.jvm)
@@ -104,4 +105,42 @@ tasks.register("jpackage") {
 
         logger.lifecycle("Installer created in: ${outputDir.absolutePath}")
     }
+}
+
+// ---------------------------------------------------------------------------
+// fatJar: create a single executable JAR with all dependencies bundled
+//
+// Run with:
+//   ./gradlew :app:fatJar
+//
+// Output goes to build/libs/mihon-desktop.jar
+// Run with: java -jar mihon-desktop.jar
+// ---------------------------------------------------------------------------
+tasks.register<Jar>("fatJar") {
+    group = "distribution"
+    description = "Create a single executable JAR with all dependencies"
+
+    archiveClassifier.set("all")
+    archiveBaseName.set("mihon-desktop")
+
+    manifest {
+        attributes(
+            "Main-Class" to "mihon.desktop.app.MainKt",
+            "Implementation-Title" to "Mihon Desktop",
+            "Implementation-Version" to "1.0.0",
+        )
+    }
+
+    // Include all project classes
+    from(sourceSets.main.get().output)
+
+    // Include all runtime dependencies
+    dependsOn(configurations.runtimeClasspath)
+    from({
+        configurations.runtimeClasspath.get().filter { it.name.endsWith(".jar") }.map { zipTree(it) }
+    })
+
+    // Exclude signatures and other META-INF that would conflict
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA", "META-INF/NOTICE", "META-INF/LICENSE")
 }

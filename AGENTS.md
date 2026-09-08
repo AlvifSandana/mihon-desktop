@@ -5,8 +5,11 @@
 ```bash
 ./gradlew build                  # compile all modules
 ./gradlew :app:run               # launch GUI (JDK 21+)
+./gradlew :app:fatJar            # single executable JAR (~94MB)
 ./gradlew :app:jpackage          # native installer (dmg/deb/exe)
 ```
+
+Run fat JAR: `java -jar app/build/libs/mihon-desktop-all.jar`
 
 No Android SDK, emulator, or Docker required. Pure JVM.
 

@@ -38,8 +38,19 @@ cd mihon-desktop
 
 ```bash
 ./gradlew build              # compile all modules
+./gradlew :app:fatJar        # create single executable JAR (~94MB)
 ./gradlew :app:jpackage      # create native installer (dmg/deb/exe)
 ```
+
+### Run from JAR
+
+After building the fat JAR:
+
+```bash
+java -jar app/build/libs/mihon-desktop-all.jar
+```
+
+Single file, no installation required. Just needs JDK 21+ installed.
 
 ## Features
 
