@@ -1,0 +1,31 @@
+CREATE TABLE downloadedChapters (
+    sourceId INTEGER NOT NULL,
+    mangaUrl TEXT NOT NULL,
+    chapterUrl TEXT NOT NULL,
+    chapterName TEXT NOT NULL,
+    pageCount INTEGER NOT NULL DEFAULT 0,
+    downloadedAt INTEGER NOT NULL,
+    PRIMARY KEY (sourceId, chapterUrl)
+);
+
+selectForManga:
+SELECT * FROM downloadedChapters WHERE sourceId = ? AND mangaUrl = ? ORDER BY chapterName;
+
+selectOne:
+SELECT * FROM downloadedChapters WHERE sourceId = ? AND chapterUrl = ?;
+
+insertOrReplace:
+INSERT OR REPLACE INTO downloadedChapters(sourceId, mangaUrl, chapterUrl, chapterName, pageCount, downloadedAt)
+VALUES (?, ?, ?, ?, ?, ?);
+
+delete:
+DELETE FROM downloadedChapters WHERE sourceId = ? AND chapterUrl = ?;
+
+deleteAllForManga:
+DELETE FROM downloadedChapters WHERE sourceId = ? AND mangaUrl = ?;
+
+selectAll:
+SELECT * FROM downloadedChapters ORDER BY downloadedAt DESC;
+
+deleteAll:
+DELETE FROM downloadedChapters;

@@ -17,10 +17,14 @@ import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import mihon.desktop.loader.cache.ImageCache
 import org.jetbrains.skia.Image as SkiaImage
+
+private val imageCache = ImageCache()
 
 /**
  * Loads and decodes an image lazily, off the UI thread, keyed on [key] (typically the URL).
+ * Uses an LRU disk cache to avoid re-fetching images.
  * Shows a spinner while loading, nothing on failure.
  */
 @Composable
@@ -31,7 +35,22 @@ fun AsyncImage(key: Any?, modifier: Modifier = Modifier, load: suspend () -> Byt
     LaunchedEffect(key) {
         bitmap = null
         failed = false
-        val bytes = withContext(Dispatchers.IO) { runCatching { load() }.getOrNull() }
+
+        // Try cache first (only for string keys that look like URLs)
+        val cacheKey = key as? String
+        val cached = if (cacheKey != null) imageCache.get(cacheKey) else null
+
+        val bytes = cached ?: withContext(Dispatchers.IO) {
+            runCatching { load() }.getOrNull()
+        }
+
+        // Store in cache if loaded from network
+        if (cached == null && bytes != null && cacheKey != null) {
+            withContext(Dispatchers.IO) {
+                runCatching { imageCache.put(cacheKey, bytes) }
+            }
+        }
+
         bitmap = bytes?.let { data ->
             withContext(Dispatchers.Default) {
                 runCatching { SkiaImage.makeFromEncoded(data).toComposeImageBitmap() }.getOrNull()

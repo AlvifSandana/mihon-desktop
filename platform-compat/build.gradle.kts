@@ -18,4 +18,8 @@ dependencies {
     api(libs.kotlinx.coroutines.core)
     api(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.serialization.json.okio)
+
+    // Optional: JCEF for real Cloudflare bypass.
+    // compileOnly so the app works without it; natives are ~100MB per platform.
+    compileOnly(libs.jcefmaven)
 }

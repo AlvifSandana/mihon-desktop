@@ -12,6 +12,8 @@ import kotlinx.coroutines.withContext
 class LibraryRepository(database: MihonDesktopDatabase = LibraryDatabase.get()) {
     private val libraryQueries = database.libraryMangaQueries
     private val progressQueries = database.readingProgressQueries
+    private val readChapterQueries = database.readChapterQueries
+    private val readerPrefQueries = database.readerPreferencesQueries
 
     suspend fun all(): List<LibraryManga> = withContext(Dispatchers.IO) {
         libraryQueries.selectAll().executeAsList()
@@ -65,6 +67,60 @@ class LibraryRepository(database: MihonDesktopDatabase = LibraryDatabase.get()) 
             chapterUrl = chapterUrl,
             chapterName = chapterName,
             pageIndex = pageIndex.toLong(),
+            updatedAt = System.currentTimeMillis(),
+        )
+    }
+
+    /** Check if a chapter has been marked as read. */
+    suspend fun isChapterRead(sourceId: Long, chapterUrl: String): Boolean = withContext(Dispatchers.IO) {
+        readChapterQueries.selectOne(sourceId, chapterUrl).executeAsOneOrNull() != null
+    }
+
+    /** Get all read chapter URLs for a manga. */
+    suspend fun readChapters(sourceId: Long, mangaUrl: String): Set<String> = withContext(Dispatchers.IO) {
+        readChapterQueries.selectForManga(sourceId, mangaUrl).executeAsList()
+            .map { it.chapterUrl }.toSet()
+    }
+
+    /** Mark a single chapter as read. */
+    suspend fun markAsRead(sourceId: Long, mangaUrl: String, chapterUrl: String) = withContext(Dispatchers.IO) {
+        readChapterQueries.insertOrReplace(
+            sourceId = sourceId,
+            mangaUrl = mangaUrl,
+            chapterUrl = chapterUrl,
+            readAt = System.currentTimeMillis(),
+        )
+    }
+
+    /** Mark all chapters in a manga as read. */
+    suspend fun markAllAsRead(sourceId: Long, mangaUrl: String, chapterUrls: List<String>) = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        for (url in chapterUrls) {
+            readChapterQueries.insertOrReplace(
+                sourceId = sourceId,
+                mangaUrl = mangaUrl,
+                chapterUrl = url,
+                readAt = now,
+            )
+        }
+    }
+
+    /** Unmark a chapter as read. */
+    suspend fun markAsUnread(sourceId: Long, chapterUrl: String) = withContext(Dispatchers.IO) {
+        readChapterQueries.delete(sourceId, chapterUrl)
+    }
+
+    /** Get webtoon mode preference for a manga. */
+    suspend fun getWebtoonMode(sourceId: Long, mangaUrl: String): Boolean = withContext(Dispatchers.IO) {
+        readerPrefQueries.selectOne(sourceId, mangaUrl).executeAsOneOrNull()?.webtoonMode == 1L
+    }
+
+    /** Save webtoon mode preference for a manga. */
+    suspend fun setWebtoonMode(sourceId: Long, mangaUrl: String, webtoonMode: Boolean) = withContext(Dispatchers.IO) {
+        readerPrefQueries.upsert(
+            sourceId = sourceId,
+            mangaUrl = mangaUrl,
+            webtoonMode = if (webtoonMode) 1L else 0L,
             updatedAt = System.currentTimeMillis(),
         )
     }

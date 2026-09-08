@@ -16,6 +16,17 @@ dependencies {
     // LibraryRepository, so callers need the sqldelight runtime on their classpath too.
     api(libs.sqldelight.driver)
     api(libs.sqldelight.coroutines)
+
+    // Optional: QuickJS JVM binding for JS-executing extensions.
+    // compileOnly so the app works without it; add to runtime classpath when needed.
+    compileOnly(libs.quickjs.jvm)
+
+    // Optional: JCEF for Cloudflare bypass.
+    // compileOnly so the app works without it; natives are ~100MB per platform.
+    compileOnly(libs.jcefmaven)
+
+    // Test dependencies
+    testImplementation("junit:junit:4.13.2")
 }
 
 sqldelight {

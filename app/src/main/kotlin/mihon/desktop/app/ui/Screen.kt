@@ -17,6 +17,11 @@ fun CatalogExtension.toRef() = ExtensionRef(packageName, jarFileName, name)
 sealed interface Screen {
     data object Library : Screen
     data object Catalog : Screen
+    data object Settings : Screen
+    data object DownloadManager : Screen
+    data object MultiSourceSearch : Screen
+    data object ExtensionManagement : Screen
+    data object Notifications : Screen
     data class SourceBrowse(val extension: CatalogExtension, val source: Source) : Screen
     data class MangaDetail(
         val extensionRef: ExtensionRef,

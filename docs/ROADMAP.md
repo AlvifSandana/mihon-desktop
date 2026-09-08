@@ -46,28 +46,35 @@ manga reader yet. Rough phases, roughly in order:
   `sourceId`+`mangaUrl`, updated on every page turn). `MangaDetailScreen` has a
   favorite-toggle button and a "Continue reading" card when progress exists;
   `LibraryScreen` is now the app's home screen.
-- [ ] `ReaderScreen` is intentionally minimal today: one page at a time, next/prev
-  buttons, no zoom/pan/webtoon mode. Upstream's reader is built on
-  `PhotoView`/`SubsamplingScaleImageView`, both Android-View-based with no desktop port —
-  replacing this needs a real Compose Multiplatform pan/zoom image viewer (evaluate
-  existing zoomable-image libraries before writing one from scratch).
-- [ ] No downloads (offline chapter storage) yet — reading always streams from the
-  source live. Would reuse the same `libraryManga`/`readingProgress` tables plus a new
-  `downloadedChapters` table tracking on-disk page files.
-- [ ] Library screen has no manual refresh/"check for updates" — it only shows what's
-  saved, doesn't check sources for new chapters (that's Phase 3's background-updates
-  item).
+- [x] `ReaderScreen` now has zoom/pan (scroll wheel, trackpad pinch, click-drag when
+  zoomed, single-click to reset), keyboard navigation (←/→, PgUp/PgDn), and a
+  webtoon/vertical-scroll toggle that stacks all pages in a `LazyColumn`.
+- [x] Downloads (offline chapter storage): `downloadedChapters` SQLDelight table tracks
+  which chapters are saved, pages stored under `~/.mihon-desktop/downloads/`. `DownloadManager`
+  in `extension-loader` handles fetch+store; `MangaDetailScreen` has per-chapter download/delete
+  buttons; `ReaderScreen` loads from disk when available.
+- [x] Library screen has a manual refresh button ("Check for updates") that re-fetches
+  each saved manga's chapter list from its source and shows a badge with the chapter count.
 
 ## Phase 3 — platform integrations
-- [ ] Background library updates (replace `WorkManager` with a plain JVM scheduler).
-- [ ] Cloudflare bypass for real (see `docs/RESEARCH.md` §6) — needs an embedded browser
-  engine (JCEF/KCEF are the leading candidates) wired into `platform-compat`'s
-  `CloudflareInterceptor`.
-- [ ] QuickJS for extensions that execute JS (not yet needed by any tested extension, but
-  will be for some) — needs a JVM-targeted QuickJS binding.
-- [ ] Backups — plain filesystem export/import instead of Android SAF.
-- [ ] Packaging: `jpackage` (bundled with the JDK) or Conveyor for Windows/macOS/Linux
-  installers.
+- [x] Background library updates: `LibraryUpdateScheduler` uses a plain JVM
+  `ScheduledExecutorService` to periodically check each library manga's source for new
+  chapters. Runs every 60 minutes by default, configurable in Settings. Results shown as
+  badges on library manga cards.
+- [x] Cloudflare bypass: `CloudflareInterceptor` detects 403/503 challenge responses and
+  delegates to `JcefCloudflareSolver` which uses JCEF (Java Chromium Embedded Framework)
+  to solve JS challenges in an off-screen browser. JCEF is `compileOnly` — add
+  `me.friwi:jcefmaven:146.0.10` to runtime classpath to enable. Without it, falls back
+  to pass-through (extensions that check interceptor presence still work).
+- [x] QuickJS: `DesktopJavaScriptEngine` uses `app.cash.quickjs:quickjs-jvm` (real
+  QuickJS) when on classpath, falls back to `javax.script` (Nashorn/GraalJS), then
+  throws clear error. Both are `compileOnly` — add to runtime classpath when needed.
+- [x] Backups: `BackupManager` exports/imports the library database as versioned JSON
+  (`~/.mihon-desktop/backups/`). Library manga, reading progress, and download metadata
+  are all included. Settings screen has create/restore buttons and lists available backups.
+- [x] Packaging: `jpackage` task in `app/build.gradle.kts` creates native installers
+  (dmg on macOS, deb on Linux, exe on Windows) via `./gradlew :app:jpackage`. Uses
+  `packageUberJarForCurrentOS` to build a single fat jar first.
 
 ## Explicitly not planned
 - Feature-parity Android widget/Biometric/Shizuku equivalents — desktop doesn't need

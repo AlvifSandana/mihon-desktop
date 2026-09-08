@@ -1,0 +1,23 @@
+CREATE TABLE readChapters (
+    sourceId INTEGER NOT NULL,
+    mangaUrl TEXT NOT NULL,
+    chapterUrl TEXT NOT NULL,
+    readAt INTEGER NOT NULL,
+    PRIMARY KEY (sourceId, chapterUrl)
+);
+
+selectForManga:
+SELECT * FROM readChapters WHERE sourceId = ? AND mangaUrl = ?;
+
+selectOne:
+SELECT * FROM readChapters WHERE sourceId = ? AND chapterUrl = ?;
+
+insertOrReplace:
+INSERT OR REPLACE INTO readChapters(sourceId, mangaUrl, chapterUrl, readAt)
+VALUES (?, ?, ?, ?);
+
+delete:
+DELETE FROM readChapters WHERE sourceId = ? AND chapterUrl = ?;
+
+deleteAllForManga:
+DELETE FROM readChapters WHERE sourceId = ? AND mangaUrl = ?;
