@@ -43,7 +43,9 @@ import eu.kanade.tachiyomi.source.CatalogueSource
 import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import mihon.desktop.loader.catalog.CatalogExtension
 
 /** Browses one loaded [Source]: popular manga by default, or search results. */
@@ -72,10 +74,13 @@ fun SourceBrowseScreen(
             error = null
             val targetPage = if (reset) 1 else nextPage
             runCatching {
-                if (query.isBlank()) {
-                    src.getPopularManga(targetPage)
-                } else {
-                    src.getSearchManga(targetPage, query, src.getFilterList())
+                // Source catalogue calls do network I/O -- keep them off the UI thread.
+                withContext(Dispatchers.IO) {
+                    if (query.isBlank()) {
+                        src.getPopularManga(targetPage)
+                    } else {
+                        src.getSearchManga(targetPage, query, src.getFilterList())
+                    }
                 }
             }.onSuccess { result ->
                 mangas = if (reset) result.mangas else mangas + result.mangas

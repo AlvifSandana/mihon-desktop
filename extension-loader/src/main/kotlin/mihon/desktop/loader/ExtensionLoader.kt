@@ -26,6 +26,25 @@ data class LoadedExtension(
  * `:source-api`/`:platform-compat` classes expect -- see [DesktopExtensionRuntime.bootstrap].
  */
 object ExtensionLoader {
+    private val extensionCacheDir = File(System.getProperty("user.home"), ".mihon-desktop/extension-cache")
+
+    /** Strict allowlist: one plain file name ending in .jar, nothing else. */
+    private val cachedJarNamePattern = Regex("[A-Za-z0-9._-]+\\.jar")
+
+    /**
+     * Loads an extension jar from the local cache directory (`~/.mihon-desktop/extension-cache`)
+     * by file name. The name comes from persisted DB rows, so it is validated against a
+     * strict allowlist (single path segment, no hidden files, no Windows drive-relative
+     * tricks): a tampered `jarFileName` value must never be able to point outside the
+     * cache dir.
+     */
+    fun loadCached(jarFileName: String): LoadedExtension {
+        require(jarFileName.matches(cachedJarNamePattern)) {
+            "Invalid extension jar file name: '$jarFileName'"
+        }
+        return load(File(extensionCacheDir, jarFileName))
+    }
+
     fun load(jarFile: File): LoadedExtension {
         val metadata = ExtensionMetadataReader.read(jarFile)
         val classLoader = URLClassLoader(arrayOf(jarFile.toURI().toURL()), Thread.currentThread().contextClassLoader)

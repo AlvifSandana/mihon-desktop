@@ -17,12 +17,9 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.automirrored.filled.Sort
-import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
@@ -48,19 +45,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.source.CatalogueSource
 import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.source.online.HttpSource
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import mihon.desktop.loader.ExtensionLoader
+import mihon.desktop.loader.download.DownloadManager
 import mihon.desktop.loader.library.LibraryManga
 import mihon.desktop.loader.library.LibraryRepository
-import mihon.desktop.loader.library.NotificationManager
-import java.io.File
-
-private val extensionCacheDir = File(System.getProperty("user.home"), ".mihon-desktop/extension-cache")
+import mihon.desktop.loader.prefs.AppPreferences
 
 private enum class SortMode(val label: String) {
     TITLE("Title (A-Z)"),
@@ -82,10 +78,6 @@ private enum class SortMode(val label: String) {
 fun LibraryScreen(
     onOpenManga: (ExtensionRef, Source, SManga) -> Unit,
     onBrowseExtensions: () -> Unit,
-    onOpenSettings: () -> Unit = {},
-    onOpenDownloads: () -> Unit = {},
-    onSearchGlobally: () -> Unit = {},
-    onOpenNotifications: () -> Unit = {},
 ) {
     val repository = remember { LibraryRepository() }
     val scope = rememberCoroutineScope()
@@ -97,7 +89,9 @@ fun LibraryScreen(
     var searchQuery by remember { mutableStateOf("") }
     var sortMode by remember { mutableStateOf(SortMode.TITLE) }
     var showSortMenu by remember { mutableStateOf(false) }
-    var unreadNotifications by remember { mutableStateOf(NotificationManager.unreadCount()) }
+    var downloadedOnly by remember {
+        mutableStateOf(AppPreferences.getBoolean(AppPreferences.KEY_DOWNLOADED_ONLY, false))
+    }
     // Track which manga have new chapters available: key = "sourceId:mangaUrl"
     val updatesMap = remember { mutableStateMapOf<String, Int>() }
 
@@ -106,16 +100,19 @@ fun LibraryScreen(
         error = null
         runCatching {
             val libraryEntries = repository.all()
-            val loadedSources = libraryEntries.map { it.jarFileName }.distinct().associateWith { jarFileName ->
-                runCatching {
-                    ExtensionLoader.load(File(extensionCacheDir, jarFileName)).sources
-                }.getOrDefault(emptyList())
+            val loadedSources = withContext(Dispatchers.IO) {
+                libraryEntries.map { it.jarFileName }.distinct().associateWith { jarFileName ->
+                    runCatching {
+                        ExtensionLoader.loadCached(jarFileName).sources
+                    }.getOrDefault(emptyList())
+                }
             }
             libraryEntries to loadedSources
         }.onSuccess { (libraryEntries, loadedSources) ->
             entries = libraryEntries
             sourcesByJar = loadedSources
         }.onFailure {
+            if (it is CancellationException) throw it
             error = it.message ?: it.toString()
         }
         loading = false
@@ -134,11 +131,25 @@ fun LibraryScreen(
                         title = entry.title
                         thumbnail_url = entry.thumbnailUrl
                     }
-                    val update = source.getMangaUpdate(manga, emptyList(), fetchDetails = true, fetchChapters = true)
-                    val chapterCount = update.chapters.size
-                    if (chapterCount > 0) {
-                        val key = "${entry.sourceId}:${entry.mangaUrl}"
-                        updatesMap[key] = chapterCount
+                    // getMangaUpdate does network I/O -- keep it off the UI thread.
+                    val update = withContext(Dispatchers.IO) {
+                        source.getMangaUpdate(manga, emptyList(), fetchDetails = true, fetchChapters = true)
+                    }
+                    // recordNewChapters persists only never-seen chapters and
+                    // returns them, so the badge counts *new* chapters (and the
+                    // Updates tab stays in sync with manual refreshes).
+                    repository.recordNewChapters(
+                        sourceId = entry.sourceId,
+                        mangaUrl = entry.mangaUrl,
+                        mangaTitle = entry.title,
+                        thumbnailUrl = entry.thumbnailUrl,
+                        packageName = entry.packageName,
+                        jarFileName = entry.jarFileName,
+                        chapters = update.chapters,
+                    )
+                }.onSuccess { fresh ->
+                    if (fresh.isNotEmpty()) {
+                        updatesMap["${entry.sourceId}:${entry.mangaUrl}"] = fresh.size
                     }
                 }
             }
@@ -146,10 +157,32 @@ fun LibraryScreen(
         }
     }
 
-    val filteredEntries = remember(entries, searchQuery, sortMode, updatesMap) {
+    // Keys ("sourceId:mangaUrl") of manga with at least one downloaded chapter,
+    // computed off the UI thread for the downloadedOnly filter.
+    val downloadManager = remember { DownloadManager() }
+    var downloadedKeys by remember { mutableStateOf<Set<String>?>(null) }
+    LaunchedEffect(entries, downloadedOnly) {
+        downloadedKeys = if (!downloadedOnly) {
+            null
+        } else {
+            entries
+                .filter { downloadManager.downloadedChapters(it.sourceId, it.mangaUrl).isNotEmpty() }
+                .map { "${it.sourceId}:${it.mangaUrl}" }
+                .toSet()
+        }
+    }
+
+    // updatesMap is a SnapshotStateMap whose instance never changes, so we key the
+    // sort computation on its size to pick up refresh results.
+    val updatesTick = updatesMap.size
+    val filteredEntries = remember(entries, searchQuery, sortMode, updatesTick, downloadedKeys) {
         entries
             .filter { entry ->
                 searchQuery.isBlank() || entry.title.contains(searchQuery, ignoreCase = true)
+            }
+            .filter { entry ->
+                val keys = downloadedKeys ?: return@filter true
+                "${entry.sourceId}:${entry.mangaUrl}" in keys
             }
             .let { list ->
                 when (sortMode) {
@@ -168,34 +201,8 @@ fun LibraryScreen(
             TopAppBar(
                 title = { Text("Library") },
                 actions = {
-                    IconButton(onClick = onSearchGlobally) {
-                        Icon(Icons.Filled.Search, contentDescription = "Search all sources")
-                    }
                     IconButton(onClick = ::refresh, enabled = entries.isNotEmpty() && !refreshing) {
                         Icon(Icons.Filled.Refresh, contentDescription = "Check for updates")
-                    }
-                    BadgedBox(
-                        badge = {
-                            if (unreadNotifications > 0) {
-                                Badge { Text("$unreadNotifications") }
-                            }
-                        },
-                    ) {
-                        IconButton(onClick = {
-                            onOpenNotifications()
-                            unreadNotifications = 0
-                        }) {
-                            Icon(Icons.Filled.Notifications, contentDescription = "Notifications")
-                        }
-                    }
-                    IconButton(onClick = onOpenDownloads) {
-                        Icon(Icons.Filled.Storage, contentDescription = "Downloads")
-                    }
-                    IconButton(onClick = onBrowseExtensions) {
-                        Icon(Icons.Filled.Add, contentDescription = "Browse extensions")
-                    }
-                    IconButton(onClick = onOpenSettings) {
-                        Icon(Icons.Filled.Settings, contentDescription = "Settings")
                     }
                 },
             )
@@ -338,12 +345,5 @@ fun LibraryScreen(
                 }
             }
         }
-    }
-}
-
-private fun fetchThumbnailBytes(source: Source?, url: String): ByteArray? {
-    val httpSource = source as? HttpSource ?: return null
-    return httpSource.client.newCall(GET(url, httpSource.headers)).execute().use { response ->
-        if (response.isSuccessful) response.body.bytes() else null
     }
 }

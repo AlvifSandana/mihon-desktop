@@ -38,7 +38,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import mihon.desktop.loader.ExtensionLoader
 import mihon.desktop.loader.catalog.CatalogClient
 import java.io.File
@@ -51,6 +53,23 @@ private data class InstalledExtension(
     val version: String,
     val jarFile: File,
 )
+
+/** Scans the extension cache and loads each jar. Must run off the UI thread. */
+private fun scanInstalledExtensions(): List<InstalledExtension> {
+    val jars = extensionCacheDir.listFiles()?.filter { it.isFile && it.extension == "jar" } ?: emptyList()
+    return jars.mapNotNull { jar ->
+        val ext = runCatching { ExtensionLoader.load(jar) }.getOrNull()
+        val sources = ext?.sources ?: emptyList()
+        if (sources.isNotEmpty()) {
+            InstalledExtension(
+                name = sources.firstOrNull()?.name ?: jar.nameWithoutExtension,
+                packageName = jar.nameWithoutExtension.substringBeforeLast("-v"),
+                version = jar.nameWithoutExtension.substringAfterLast("-v", "unknown"),
+                jarFile = jar,
+            )
+        } else null
+    }
+}
 
 /**
  * Screen to manage installed extensions.
@@ -69,19 +88,7 @@ fun ExtensionManagementScreen(
 
     LaunchedEffect(Unit) {
         loading = true
-        val jars = extensionCacheDir.listFiles()?.filter { it.extension == "jar" } ?: emptyList()
-        installedExtensions = jars.mapNotNull { jar ->
-            val ext = runCatching { ExtensionLoader.load(jar) }.getOrNull()
-            val sources = ext?.sources ?: emptyList()
-            if (sources.isNotEmpty()) {
-                InstalledExtension(
-                    name = sources.firstOrNull()?.name ?: jar.nameWithoutExtension,
-                    packageName = jar.nameWithoutExtension.substringBeforeLast("-v"),
-                    version = jar.nameWithoutExtension.substringAfterLast("-v", "unknown"),
-                    jarFile = jar,
-                )
-            } else null
-        }
+        installedExtensions = withContext(Dispatchers.IO) { scanInstalledExtensions() }
         loading = false
     }
 
@@ -100,19 +107,7 @@ fun ExtensionManagementScreen(
                             scope.launch {
                                 updating = true
                                 // Re-scan extensions
-                                val jars = extensionCacheDir.listFiles()?.filter { it.extension == "jar" } ?: emptyList()
-                                installedExtensions = jars.mapNotNull { jar ->
-                                    val ext = runCatching { ExtensionLoader.load(jar) }.getOrNull()
-                                    val sources = ext?.sources ?: emptyList()
-                                    if (sources.isNotEmpty()) {
-                                        InstalledExtension(
-                                            name = sources.firstOrNull()?.name ?: jar.nameWithoutExtension,
-                                            packageName = jar.nameWithoutExtension.substringBeforeLast("-v"),
-                                            version = jar.nameWithoutExtension.substringAfterLast("-v", "unknown"),
-                                            jarFile = jar,
-                                        )
-                                    } else null
-                                }
+                                installedExtensions = withContext(Dispatchers.IO) { scanInstalledExtensions() }
                                 updating = false
                             }
                         },

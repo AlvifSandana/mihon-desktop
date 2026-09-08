@@ -8,8 +8,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import mihon.desktop.loader.ExtensionLoader
-import mihon.desktop.loader.library.NotificationManager
-import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -35,12 +33,11 @@ class LibraryUpdateScheduler(
     private val running = AtomicBoolean(false)
     private val updating = AtomicBoolean(false)
 
-    /** Manga that have new chapters: key = "sourceId:mangaUrl", value = chapter count. */
-    private val _updates = mutableMapOf<String, Int>()
+    /** Manga that have new chapters: key = "sourceId:mangaUrl", value = new chapter count. */
+    private val _updates = java.util.concurrent.ConcurrentHashMap<String, Int>()
     val updates: Map<String, Int> get() = _updates.toMap()
 
     private var listener: UpdateListener? = null
-    private val extensionCacheDir = File(System.getProperty("user.home"), ".mihon-desktop/extension-cache")
 
     fun interface UpdateListener {
         fun onUpdatesFound(mangaKey: String, chapterCount: Int)
@@ -106,7 +103,7 @@ class LibraryUpdateScheduler(
         var updatesFound = 0
         for (entry in entries) {
             val sources = runCatching {
-                ExtensionLoader.load(File(extensionCacheDir, entry.jarFileName)).sources
+                ExtensionLoader.loadCached(entry.jarFileName).sources
             }.getOrDefault(emptyList())
 
             val source = sources.firstOrNull { it.id == entry.sourceId } ?: continue
@@ -119,12 +116,22 @@ class LibraryUpdateScheduler(
                     thumbnail_url = entry.thumbnailUrl
                 }
                 val update = source.getMangaUpdate(manga, emptyList(), fetchDetails = true, fetchChapters = true)
-                update.chapters.size
-            }.onSuccess { chapterCount ->
-                if (chapterCount > 0) {
+                // recordNewChapters diffs against updateHistory so only chapters
+                // we have never seen before are recorded/returned.
+                repository.recordNewChapters(
+                    sourceId = entry.sourceId,
+                    mangaUrl = entry.mangaUrl,
+                    mangaTitle = entry.title,
+                    thumbnailUrl = entry.thumbnailUrl,
+                    packageName = entry.packageName,
+                    jarFileName = entry.jarFileName,
+                    chapters = update.chapters,
+                )
+            }.onSuccess { freshChapters ->
+                if (freshChapters.isNotEmpty()) {
                     val key = "${entry.sourceId}:${entry.mangaUrl}"
-                    _updates[key] = chapterCount
-                    listener?.onUpdatesFound(key, chapterCount)
+                    _updates[key] = freshChapters.size
+                    listener?.onUpdatesFound(key, freshChapters.size)
                     updatesFound++
                 }
             }

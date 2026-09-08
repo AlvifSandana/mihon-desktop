@@ -28,6 +28,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -40,7 +41,9 @@ import eu.kanade.tachiyomi.source.CatalogueSource
 import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.SManga
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import mihon.desktop.loader.ExtensionLoader
 import java.io.File
 
@@ -61,18 +64,22 @@ fun MultiSourceSearchScreen(
     var searching by remember { mutableStateOf(false) }
     var results by remember { mutableStateOf(mapOf<String, List<SManga>>()) }
     var error by remember { mutableStateOf<String?>(null) }
+    var allSources by remember { mutableStateOf(listOf<CatalogueSource>()) }
 
-    // Load all installed catalogue sources
-    val allSources = remember {
-        val cacheDir = extensionCacheDir
-        if (!cacheDir.exists()) return@remember emptyList()
-        cacheDir.listFiles()
-            ?.filter { it.extension == ".jar" }
-            ?.flatMap { jar ->
-                runCatching { ExtensionLoader.load(jar).sources }.getOrDefault(emptyList())
-            }
-            ?.filterIsInstance<CatalogueSource>()
-            ?: emptyList()
+    // Load all installed catalogue sources (jar parsing is heavy -- keep it off
+    // the composition thread).
+    LaunchedEffect(Unit) {
+        allSources = withContext(Dispatchers.IO) {
+            val cacheDir = extensionCacheDir
+            if (!cacheDir.exists()) return@withContext emptyList()
+            cacheDir.listFiles()
+                ?.filter { it.isFile && it.extension == "jar" }
+                ?.flatMap { jar ->
+                    runCatching { ExtensionLoader.load(jar).sources }.getOrDefault(emptyList())
+                }
+                ?.filterIsInstance<CatalogueSource>()
+                ?: emptyList()
+        }
     }
 
     fun search() {
@@ -83,7 +90,10 @@ fun MultiSourceSearchScreen(
             val grouped = mutableMapOf<String, List<SManga>>()
             for (source in allSources) {
                 runCatching {
-                    val result = source.getSearchManga(1, query.trim(), FilterList())
+                    withContext(Dispatchers.IO) {
+                        source.getSearchManga(1, query.trim(), FilterList())
+                    }
+                }.onSuccess { result ->
                     if (result.mangas.isNotEmpty()) {
                         grouped[source.name] = result.mangas
                     }

@@ -66,6 +66,9 @@ object AppPreferences {
     const val KEY_UPDATE_ENABLED = "library.update.enabled"
     const val KEY_THEME = "app.theme"
     const val KEY_READING_DIRECTION = "reader.direction"
+    const val KEY_DOWNLOADED_ONLY = "library.downloaded_only"
+    const val KEY_INCOGNITO_MODE = "library.incognito_mode"
+    const val KEY_UPDATES_LAST_SEEN = "updates.last_seen_timestamp"
     const val DEFAULT_UPDATE_INTERVAL = 60L
     const val DEFAULT_THEME = "system"
     const val DEFAULT_READING_DIRECTION = "ltr"

@@ -21,3 +21,12 @@ DELETE FROM readChapters WHERE sourceId = ? AND chapterUrl = ?;
 
 deleteAllForManga:
 DELETE FROM readChapters WHERE sourceId = ? AND mangaUrl = ?;
+
+selectAllWithManga:
+SELECT rc.*, lm.title AS mangaTitle, lm.thumbnailUrl, lm.author AS mangaAuthor, lm.packageName, lm.jarFileName, lm.extensionName
+FROM readChapters rc
+JOIN libraryManga lm ON rc.sourceId = lm.sourceId AND rc.mangaUrl = lm.mangaUrl
+ORDER BY rc.readAt DESC;
+
+deleteAll:
+DELETE FROM readChapters;

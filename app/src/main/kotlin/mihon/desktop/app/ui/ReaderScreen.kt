@@ -56,6 +56,7 @@ import kotlinx.coroutines.withContext
 import mihon.desktop.loader.download.DownloadManager
 import mihon.desktop.loader.library.LibraryRepository
 import mihon.desktop.loader.log.Logger
+import mihon.desktop.loader.prefs.AppPreferences
 import org.jetbrains.skia.Image as SkiaImage
 
 /**
@@ -97,6 +98,9 @@ fun ReaderScreen(
     var isOffline by remember(chapterIndex) { mutableStateOf(false) }
     var showControls by remember { mutableStateOf(true) }
     var prefsLoaded by remember { mutableStateOf(false) }
+    val incognitoMode = remember {
+        AppPreferences.getBoolean(AppPreferences.KEY_INCOGNITO_MODE, false)
+    }
 
     val chapter = chapters.getOrNull(chapterIndex)
 
@@ -108,7 +112,9 @@ fun ReaderScreen(
 
     fun toggleWebtoonMode() {
         webtoonMode = !webtoonMode
-        if (prefsLoaded) {
+        // In incognito mode, don't persist the per-manga preference: writing it
+        // would leave a trace of which manga was opened.
+        if (prefsLoaded && !incognitoMode) {
             scope.launch {
                 repository.setWebtoonMode(source.id, manga.url, webtoonMode)
             }
@@ -133,7 +139,10 @@ fun ReaderScreen(
                     }
                     pages = offlinePages
                 } else {
-                    runCatching { source.getPageList(ch) }
+                    runCatching {
+                        // getPageList does network I/O -- keep it off the UI thread.
+                        withContext(Dispatchers.IO) { source.getPageList(ch) }
+                    }
                         .onSuccess { pages = it }
                         .onFailure {
                             Logger.e(TAG, "Failed to load pages: ${it.message}", it)
@@ -150,6 +159,9 @@ fun ReaderScreen(
     }
 
     LaunchedEffect(chapterIndex, pageIndex) {
+        // Skip while the chapter is still loading: saving pageIndex 0 on open
+        // would clobber previously saved progress. Also skip in incognito mode.
+        if (incognitoMode || loading) return@LaunchedEffect
         val ch = chapter ?: return@LaunchedEffect
         repository.saveProgress(
             sourceId = source.id,
@@ -182,7 +194,25 @@ fun ReaderScreen(
     fun goToNextPage() {
         when {
             pageIndex < pages.lastIndex -> pageIndex++
-            chapterIndex < chapters.lastIndex -> chapterIndex++
+            chapterIndex < chapters.lastIndex -> {
+                // Mark current chapter as read before advancing
+                val ch = chapter
+                if (ch != null && !incognitoMode) {
+                    scope.launch {
+                        repository.markAsRead(source.id, manga.url, ch.url)
+                    }
+                }
+                chapterIndex++
+            }
+            pageIndex == pages.lastIndex -> {
+                // Last page of last chapter — mark as read
+                val ch = chapter
+                if (ch != null && !incognitoMode) {
+                    scope.launch {
+                        repository.markAsRead(source.id, manga.url, ch.url)
+                    }
+                }
+            }
         }
     }
 

@@ -51,7 +51,9 @@ import androidx.compose.ui.unit.dp
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.NetworkHelper
 import eu.kanade.tachiyomi.source.Source
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import mihon.desktop.loader.ExtensionLoader
 import mihon.desktop.loader.catalog.CatalogClient
 import mihon.desktop.loader.catalog.CatalogExtension
@@ -75,7 +77,11 @@ private enum class CatalogSortMode(val label: String) {
 /** Browse and install extensions from the keiyoushi catalog. */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-fun CatalogScreen(onSourceSelected: (CatalogExtension, Source) -> Unit, onBack: () -> Unit) {
+fun CatalogScreen(
+    onSourceSelected: (CatalogExtension, Source) -> Unit,
+    onBack: () -> Unit,
+    showBack: Boolean = true,
+) {
     val scope = rememberCoroutineScope()
     val client = remember { Injekt.get<NetworkHelper>().client }
     val catalogClient = remember { CatalogClient(client) }
@@ -168,10 +174,12 @@ fun CatalogScreen(onSourceSelected: (CatalogExtension, Source) -> Unit, onBack: 
             scope.launch {
                 error = null
                 runCatching {
-                    val jarFile = extensionCacheDir.listFiles()?.firstOrNull { file ->
-                        file.extension == "jar" && file.name.startsWith(extension.packageName)
-                    } ?: throw IllegalStateException("Extension jar not found in cache")
-                    ExtensionLoader.load(jarFile).sources
+                    withContext(Dispatchers.IO) {
+                        val jarFile = extensionCacheDir.listFiles()?.firstOrNull { file ->
+                            file.extension == "jar" && file.name.startsWith(extension.packageName)
+                        } ?: throw IllegalStateException("Extension jar not found in cache")
+                        ExtensionLoader.load(jarFile).sources
+                    }
                 }.onSuccess { sources ->
                     when {
                         sources.isEmpty() -> error = "${extension.name} loaded but declared no sources"
@@ -191,8 +199,10 @@ fun CatalogScreen(onSourceSelected: (CatalogExtension, Source) -> Unit, onBack: 
             installingPackage = extension.packageName
             error = null
             runCatching {
-                val jar = downloader.download(extension)
-                ExtensionLoader.load(jar).sources
+                withContext(Dispatchers.IO) {
+                    val jar = downloader.download(extension)
+                    ExtensionLoader.load(jar).sources
+                }
             }.onSuccess { sources ->
                 // Mark as installed
                 installedPackages = installedPackages + extension.packageName
@@ -213,8 +223,12 @@ fun CatalogScreen(onSourceSelected: (CatalogExtension, Source) -> Unit, onBack: 
         topBar = {
             TopAppBar(
                 title = { Text("Extensions") },
-                navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
+                navigationIcon = if (showBack) {
+                    {
+                        IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
+                    }
+                } else {
+                    {}
                 },
                 actions = {
                     IconButton(onClick = { showSortMenu = true }) {

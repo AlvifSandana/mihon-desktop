@@ -1,0 +1,35 @@
+CREATE TABLE updateHistory (
+    sourceId INTEGER NOT NULL,
+    mangaUrl TEXT NOT NULL,
+    mangaTitle TEXT NOT NULL,
+    thumbnailUrl TEXT,
+    chapterUrl TEXT NOT NULL,
+    chapterName TEXT NOT NULL,
+    chapterNumber REAL,
+    packageName TEXT NOT NULL,
+    jarFileName TEXT NOT NULL,
+    fetchedAt INTEGER NOT NULL,
+    PRIMARY KEY (sourceId, chapterUrl)
+);
+
+selectAll:
+SELECT * FROM updateHistory ORDER BY fetchedAt DESC;
+
+selectForManga:
+SELECT * FROM updateHistory WHERE sourceId = ? AND mangaUrl = ? ORDER BY fetchedAt DESC;
+
+selectChapterUrls:
+SELECT chapterUrl FROM updateHistory WHERE sourceId = ? AND mangaUrl = ?;
+
+countSince:
+SELECT COUNT(*) FROM updateHistory WHERE fetchedAt > ?;
+
+insertOrReplace:
+INSERT OR REPLACE INTO updateHistory(sourceId, mangaUrl, mangaTitle, thumbnailUrl, chapterUrl, chapterName, chapterNumber, packageName, jarFileName, fetchedAt)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+deleteOlderThan:
+DELETE FROM updateHistory WHERE fetchedAt < ?;
+
+deleteAll:
+DELETE FROM updateHistory;

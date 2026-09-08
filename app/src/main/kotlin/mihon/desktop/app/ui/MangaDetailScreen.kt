@@ -63,7 +63,9 @@ import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import mihon.desktop.loader.download.DownloadManager
 import mihon.desktop.loader.library.LibraryRepository
 import mihon.desktop.loader.library.ReadingProgress
@@ -137,7 +139,10 @@ fun MangaDetailScreen(
         isFavorite = repository.isFavorite(source.id, manga.url)
         progress = repository.progressFor(source.id, manga.url)
         runCatching {
-            source.getMangaUpdate(manga, emptyList(), fetchDetails = true, fetchChapters = true)
+            // getMangaUpdate does network I/O -- keep it off the UI thread.
+            withContext(Dispatchers.IO) {
+                source.getMangaUpdate(manga, emptyList(), fetchDetails = true, fetchChapters = true)
+            }
         }.onSuccess { update ->
             detail = update.manga
             chapters = update.chapters
