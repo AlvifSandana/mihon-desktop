@@ -1,93 +1,76 @@
-# mihon-desktop
+# Mihon Desktop
 
-A desktop manga reader exploring whether [Mihon](https://github.com/mihonapp/mihon)'s
-manga source extensions — the ones published at
-[keiyoushi/extensions](https://github.com/keiyoushi/extensions) for Android — can run on
-a plain JVM desktop app, without an Android runtime.
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![JDK](https://img.shields.io/badge/JDK-21+-green.svg)](https://openjdk.org/projects/jdk/21/)
+[![Kotlin](https://img.shields.io/badge/Kotlin-2.2.20-purple.svg)](https://kotlinlang.org/)
+[![Compose](https://img.shields.io/badge/Compose%20Desktop-1.12.0-blue.svg)](https://www.jetbrains.com/compose/)
 
-**They can.** A Compose Desktop GUI browses the live keiyoushi catalog, installs an
-extension's real `.jar` (no Android SDK, emulator, or dex-to-JVM bridge involved), and
-reads manga through it: search a source, add manga to a persistent library, view a
-manga's chapter list, read a chapter, resume where you left off.
+A desktop manga reader that runs [Mihon](https://github.com/mihonapp/mihon)'s Android extensions on a plain JVM — no Android SDK, emulator, or dex-to-JVM bridge required.
 
-```
+## What This Does
+
+Mihon Desktop loads real extension `.jar` files from [keiyoushi/extensions](https://github.com/keiyoushi/extensions) and reads manga through them:
+
+- Browse and install from the live keiyoushi catalog (~1400 extensions)
+- Search manga, view details and chapters
+- Read chapters with zoom/pan and webtoon mode
+- Persistent library with reading progress
+- Download chapters for offline reading
+- Export/import backups
+
+All powered by a minimal Android stub layer — just enough classes with the right names to satisfy extension bytecode.
+
+## Quick Start
+
+### Prerequisites
+
+- **JDK 21+** (no Android SDK required)
+
+### Run
+
+```bash
+git clone https://github.com/your-username/mihon-desktop.git
+cd mihon-desktop
 ./gradlew :app:run
 ```
 
-opens on your **Library** — empty on first run, with a button to browse extensions.
-From there: an extension list (search/install from keiyoushi's ~1400 live extensions) →
-a source's popular/search manga grid → a manga's details and chapters (with an
-add-to-library toggle and a "Continue reading" card once you have progress) → a
-page-by-page reader with zoom/pan and webtoon mode. Everything you add to the library
-and every page you read is saved to a local sqlite database (`~/.mihon-desktop/library.db`)
-and survives restarting the app.
+### Build
 
-## Why this is possible — the short version
-
-- keiyoushi publishes each extension as **two** artifacts: the Android `.apk` and a
-  `.jar`. The `.jar` contains genuine JVM `.class` bytecode (not Android DEX), because
-  it's the same artifact [Suwayomi](https://github.com/Suwayomi/Suwayomi-Server) (a
-  JVM-based Tachiyomi server) already depends on.
-- The bytecode still references a handful of Android types by name
-  (`android.content.Context`, `eu.kanade.tachiyomi.network.NetworkHelper`, a few OkHttp
-  interceptors). Supplying small, JVM-native classes with those exact names is enough —
-  no Android SDK, emulator, or dex-to-JVM bridge required.
-
-Full writeup, including the actual investigation (`file`/`unzip`/`javap` on both
-artifacts, what broke and why on the first few extensions tried) is in
-[`docs/RESEARCH.md`](docs/RESEARCH.md).
-
-## Project layout
-
+```bash
+./gradlew build              # compile all modules
+./gradlew :app:jpackage      # create native installer (dmg/deb/exe)
 ```
-platform-compat/    Android/androidx stand-ins + networking + Cloudflare bypass
-source-api/          Mihon's Source/HttpSource/CatalogueSource contracts, unmodified
-extension-loader/    discovers + loads an extension .jar, downloads, backups, QuickJS
-app/                 Compose Desktop UI: catalog, source browse, manga detail, reader, settings
-samples/extensions/  a few real extension jars for trying the loader against
-docs/                RESEARCH.md, ARCHITECTURE.md, ROADMAP.md
-```
-
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how the modules fit together and
-the design decisions behind them.
-
-## Building and running
-
-Requires JDK 21+. No Android SDK needed anywhere in this project.
-
-```
-./gradlew build
-./gradlew :app:run
-```
-
-`:app:run` opens the GUI. It talks straight to keiyoushi's live catalog (~1400
-extensions) — search, click one to download+install its real `.jar` to
-`~/.mihon-desktop/extension-cache/` (sha256-verified against `release-assets.json`), and
-it drops you into that source's popular-manga grid. See `docs/RESEARCH.md` §7 for how the
-catalog is actually structured (it's gzip+protobuf, not the JSON file its filename
-suggests).
-
-### Packaging native installers
-
-```
-./gradlew :app:jpackage
-```
-
-Creates a native installer for your platform (dmg on macOS, deb on Linux, exe on Windows)
-using `jpackage` bundled with JDK 14+.
 
 ## Features
 
-- **Extension catalog** — browse/search ~1400 live keiyoushi extensions, install with one click
-- **Library** — persistent manga library with reading progress, manual refresh for updates
-- **Reader** — zoom/pan (scroll wheel, trackpad pinch), keyboard navigation, webtoon/vertical-scroll mode
-- **Offline reading** — download chapters for offline access, auto-loads from disk when available
-- **Backups** — export/import library as JSON, timestamped backup files
-- **Settings** — configurable background update interval, theme toggle, reading direction
-- **Cloudflare bypass** — optional JCEF integration for Cloudflare-protected sites
-- **QuickJS** — optional real QuickJS engine for JS-executing extensions
+| Feature | Status |
+|---------|--------|
+| Extension catalog | ✅ Browse/search ~1400 live keiyoushi extensions |
+| Extension installation | ✅ One-click download and install |
+| Library management | ✅ Persistent manga library with progress |
+| Chapter reader | ✅ Zoom/pan, keyboard nav, webtoon mode |
+| Offline reading | ✅ Download chapters for offline access |
+| Background updates | ✅ Automatic library update checks |
+| Backups | ✅ Export/import library as JSON |
+| Cloudflare bypass | ✅ Optional JCEF integration |
+| QuickJS support | ✅ Optional real QuickJS engine |
 
-### Optional dependencies
+## Architecture
+
+```
+platform-compat  →  source-api  →  extension-loader  →  app
+```
+
+| Module | Purpose |
+|--------|---------|
+| `platform-compat` | Android stand-ins (Context, SharedPreferences) + networking |
+| `source-api` | Mihon's Source/HttpSource/CatalogueSource contracts |
+| `extension-loader` | Extension discovery, loading, catalog, downloads, library DB |
+| `app` | Compose Desktop UI |
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed module documentation.
+
+## Optional Dependencies
 
 Add to runtime classpath for full feature set:
 
@@ -99,27 +82,70 @@ implementation("app.cash.quickjs:quickjs-jvm:0.9.2")
 implementation("me.friwi:jcefmaven:146.0.10")
 ```
 
-Without these, the app still works — extensions that check interceptor presence don't
-crash, and JS execution falls back to `javax.script` (Nashorn/GraalJS if available).
+Without these, the app still works — extensions that check interceptor presence don't crash, and JS execution falls back to `javax.script` (Nashorn/GraalJS if available).
 
-## Status
+## Data Storage
 
-All ROADMAP phases complete. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for details.
+All data is stored in `~/.mihon-desktop/`:
 
-## Known gaps
+| Path | Contents |
+|------|----------|
+| `library.db` | Library manga and reading progress |
+| `extension-cache/` | Downloaded extension JARs |
+| `downloads/` | Downloaded chapter pages |
+| `backups/` | Library backup files |
+| `http-cache/` | Network response cache |
+| `prefs/` | Extension preferences |
+| `jcef-bundle/` | JCEF natives (if enabled) |
 
-- **JCEF natives are large.** Each platform's native bundle is ~100MB. They're downloaded
-  on first run by `jcefmaven` and cached in `~/.mihon-desktop/jcef-bundle/`.
-- **No image caching.** Pages are fetched fresh each time (except downloads). A proper
- LRU disk cache would improve repeated reads.
-- **No chapter sorting/filtering** in the reader. Chapters are listed in source order.
-- **No batch operations.** Can't download all chapters at once or batch-remove from library.
+## How It Works
+
+See [docs/RESEARCH.md](docs/RESEARCH.md) for the full investigation, but the short version:
+
+1. keiyoushi publishes each extension as both an Android `.apk` and a JVM `.jar`
+2. The `.jar` contains standard JVM bytecode (`CAFEBABE` magic, class file version 55)
+3. A plain `URLClassLoader` loads the classes — no dex-to-JVM bridge needed
+4. Extension bytecode references Android types by name (`android.content.Context`, etc.)
+5. We supply JVM classes with those exact names and just enough behavior to work
+
+The stub layer is surprisingly small: a few Android classes + three OkHttp interceptors.
 
 ## Relationship to Suwayomi
 
-[Suwayomi](https://github.com/Suwayomi/Suwayomi-Server) already solved this problem years
-ago with a much broader `AndroidCompat` module, and has production desktop/web clients
-today. If you just want to read manga on desktop using the Tachiyomi/Mihon extension
-catalog, use Suwayomi. This project exists to explore keeping Mihon's own codebase
-lineage and UI/UX on desktop instead, now that the actual Android-stub surface needed
-turned out to be much smaller than expected.
+[Suwayomi](https://github.com/Suwayomi/Suwayomi-Server) already solved this problem with a much broader `AndroidCompat` module and has production desktop/web clients. If you just want to read manga on desktop, use Suwayomi.
+
+This project exists to explore keeping Mihon's own codebase lineage and UI/UX on desktop, now that the actual Android-stub surface needed turned out to be much smaller than expected.
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+### Development Guidelines
+
+- **JDK 21+** required
+- Follow existing code style
+- Keep `platform-compat` FQCNs unchanged (they're load-bearing)
+- Keep `source-api` close to upstream Mihon
+- Test with real extensions from keiyoushi
+
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md) — module structure and design decisions
+- [Research](docs/RESEARCH.md) — investigation into running Mihon extensions on desktop
+- [Roadmap](docs/ROADMAP.md) — project phases and future plans
+
+## License
+
+This project is licensed under the Apache License, Version 2.0 — see [LICENSE](LICENSE) for details.
+
+See [NOTICE.md](NOTICE.md) for code provenance and attribution.
+
+## Acknowledgments
+
+- [Mihon](https://github.com/mihonapp/mihon) — the original Android manga reader
+- [keiyoushi/extensions](https://github.com/keiyoushi/extensions) — the extension repository
+- [Suwayomi](https://github.com/Suwayomi/Suwayomi-Server) — prior art for JVM-based extension loading

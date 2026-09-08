@@ -9,6 +9,7 @@ data class CatalogExtension(
     val extensionLibVersion: String,
     val isNsfw: Boolean,
     val apkUrl: String,
+    val iconUrl: String,
     val sources: List<Source>,
 ) {
     /**
@@ -30,5 +31,6 @@ internal fun NetworkExtensionStore.Extension.toCatalogExtension(): CatalogExtens
     extensionLibVersion = extensionLib,
     isNsfw = contentWarning >= NetworkExtensionStore.ContentWarning.MIXED,
     apkUrl = resources.apkUrl,
+    iconUrl = resources.iconUrl,
     sources = sources.map { CatalogExtension.Source(it.id, it.name, it.language, it.homeUrl) },
 )

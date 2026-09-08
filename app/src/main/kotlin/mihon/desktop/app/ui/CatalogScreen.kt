@@ -48,6 +48,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.NetworkHelper
 import eu.kanade.tachiyomi.source.Source
 import kotlinx.coroutines.launch
@@ -313,13 +314,13 @@ fun CatalogScreen(onSourceSelected: (CatalogExtension, Source) -> Unit, onBack: 
                                 }
                             },
                             leadingContent = {
-                                if (installed) {
-                                    Icon(
-                                        Icons.Filled.Check,
-                                        contentDescription = "Installed",
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(20.dp),
-                                    )
+                                AsyncImage(
+                                    key = ext.iconUrl,
+                                    modifier = Modifier.size(40.dp),
+                                ) {
+                                    client.newCall(GET(ext.iconUrl)).execute().use { response ->
+                                        if (response.isSuccessful) response.body?.bytes() else null
+                                    }
                                 }
                             },
                             trailingContent = {

@@ -1,86 +1,123 @@
 # Roadmap
 
-This scaffold proves the extension-loading foundation works. It is not close to a usable
-manga reader yet. Rough phases, roughly in order:
+This document outlines the project phases and future plans.
 
-## Phase 1 — harden the loader
+## Current Status
 
-- [x] Test extensions across more multisrc families to find remaining missing stub
-  classes/interceptors (`docs/RESEARCH.md` §4-5): `Injekt.get<Application>()`,
-  `UncaughtExceptionInterceptor`, `UserAgentInterceptor`, `CloudflareInterceptor`
-  (placeholder), `okhttp3.brotli`/`okhttp3.zstd`, `android.os.SystemClock`.
-- [x] `Application` now has a real `filesDir`/`cacheDir` (under `~/.mihon-desktop`).
+All planned phases are complete. The project is functional and can:
+- Browse and install extensions from the live keiyoushi catalog
+- Read manga through loaded extensions
+- Maintain a persistent library with reading progress
+- Download chapters for offline reading
+- Export/import backups
+
+See [README.md](../README.md) for feature overview.
+
+## Phase 1 — Harden the Loader ✅
+
+**Goal:** Ensure extensions load and run correctly on JVM.
+
+### Completed
+
+- [x] Test extensions across multisrc families for missing stubs
+- [x] Add missing stub classes/interceptors:
+  - `Injekt.get<Application>()`
+  - `UncaughtExceptionInterceptor`
+  - `UserAgentInterceptor`
+  - `CloudflareInterceptor` (placeholder)
+  - `okhttp3.brotli`/`okhttp3.zstd`
+  - `android.os.SystemClock`
+- [x] `Application` has real `filesDir`/`cacheDir` under `~/.mihon-desktop`
 - [x] `ConfigurableSource.getSourcePreferences()` persists to real files
-  (`~/.mihon-desktop/prefs/<name>.properties`), not just in-memory — survives a restart.
-- [x] Extension *catalog*: `mihon.desktop.loader.catalog` fetches keiyoushi's real
-  `repo.json` → `index_v2` → gzip-compressed protobuf catalog (mirroring upstream's
-  `ExtensionStoreService`, see `docs/RESEARCH.md` §7), lists all ~1400 live extensions,
-  and downloads+caches an extension's `.jar` by package name
-  (`./gradlew :app:run --args="eu.kanade.tachiyomi.extension.en.bunmanga"`).
-- [x] `CatalogClient.fetchCatalog` and `ExtensionDownloader.download` are now `suspend
-  fun`s wrapped in `withContext(Dispatchers.IO)`, safe to call from a UI coroutine scope
-  without blocking it.
-- [x] `ExtensionDownloader` now verifies every download (and every cache hit) against
-  keiyoushi's `release-assets.json` sha256 manifest, deleting and refusing to load
-  anything that doesn't match. Verification is skipped (not blocking) if the manifest
-  itself can't be fetched.
+- [x] Extension catalog: fetch keiyoushi's `repo.json` → `index_v2` → gzip+protobuf
+- [x] `CatalogClient` and `ExtensionDownloader` are `suspend` functions
+- [x] `ExtensionDownloader` verifies downloads against sha256 manifest
 
-## Phase 2 — real UI
-- [x] Compose Desktop (`org.jetbrains.compose` 1.12.0 + Kotlin's own compose compiler
-  plugin) is wired into `app`, replacing the CLI entirely. `mihon.desktop.app.ui` has four
-  screens with simple `remember { mutableStateOf<Screen>(...) }` navigation (no
-  Voyager/Navigation library, no back stack beyond one level per screen type):
-  `LibraryScreen` (saved manga grid, the app's home screen),
-  `CatalogScreen` (search/install from the live keiyoushi catalog),
-  `SourceBrowseScreen` (popular/search grid for one loaded source),
-  `MangaDetailScreen` (fetches details+chapters via `getMangaUpdate`), and `ReaderScreen`
-  (fetches pages via `getPageList`, decodes bytes with `org.jetbrains.skia.Image`).
-  Verified to launch and stay stable in a WSLg (`DISPLAY=:0`) session — Skiko falls back
-  from GL to a software rasterizer there rather than crashing.
-- [x] Library persistence: `extension-loader`'s `mihon.desktop.loader.library` package
-  is a small SQLDelight schema (`~/.mihon-desktop/library.db`, plain JDBC driver — same
-  generated query code Android would use, just a different `SqlDriver` impl) with two
-  tables — `libraryManga` (which manga are saved, plus the `packageName`/`jarFileName` of
-  the extension that provides them, so reopening one reloads the cached jar with no
-  network/catalog fetch) and `readingProgress` (last chapter+page per manga, keyed by
-  `sourceId`+`mangaUrl`, updated on every page turn). `MangaDetailScreen` has a
-  favorite-toggle button and a "Continue reading" card when progress exists;
-  `LibraryScreen` is now the app's home screen.
-- [x] `ReaderScreen` now has zoom/pan (scroll wheel, trackpad pinch, click-drag when
-  zoomed, single-click to reset), keyboard navigation (←/→, PgUp/PgDn), and a
-  webtoon/vertical-scroll toggle that stacks all pages in a `LazyColumn`.
-- [x] Downloads (offline chapter storage): `downloadedChapters` SQLDelight table tracks
-  which chapters are saved, pages stored under `~/.mihon-desktop/downloads/`. `DownloadManager`
-  in `extension-loader` handles fetch+store; `MangaDetailScreen` has per-chapter download/delete
-  buttons; `ReaderScreen` loads from disk when available.
-- [x] Library screen has a manual refresh button ("Check for updates") that re-fetches
-  each saved manga's chapter list from its source and shows a badge with the chapter count.
+## Phase 2 — Real UI ✅
 
-## Phase 3 — platform integrations
-- [x] Background library updates: `LibraryUpdateScheduler` uses a plain JVM
-  `ScheduledExecutorService` to periodically check each library manga's source for new
-  chapters. Runs every 60 minutes by default, configurable in Settings. Results shown as
-  badges on library manga cards.
-- [x] Cloudflare bypass: `CloudflareInterceptor` detects 403/503 challenge responses and
-  delegates to `JcefCloudflareSolver` which uses JCEF (Java Chromium Embedded Framework)
-  to solve JS challenges in an off-screen browser. JCEF is `compileOnly` — add
-  `me.friwi:jcefmaven:146.0.10` to runtime classpath to enable. Without it, falls back
-  to pass-through (extensions that check interceptor presence still work).
-- [x] QuickJS: `DesktopJavaScriptEngine` uses `app.cash.quickjs:quickjs-jvm` (real
-  QuickJS) when on classpath, falls back to `javax.script` (Nashorn/GraalJS), then
-  throws clear error. Both are `compileOnly` — add to runtime classpath when needed.
-- [x] Backups: `BackupManager` exports/imports the library database as versioned JSON
-  (`~/.mihon-desktop/backups/`). Library manga, reading progress, and download metadata
-  are all included. Settings screen has create/restore buttons and lists available backups.
-- [x] Packaging: `jpackage` task in `app/build.gradle.kts` creates native installers
-  (dmg on macOS, deb on Linux, exe on Windows) via `./gradlew :app:jpackage`. Uses
-  `packageUberJarForCurrentOS` to build a single fat jar first.
+**Goal:** Build a functional Compose Desktop GUI.
 
-## Explicitly not planned
-- Feature-parity Android widget/Biometric/Shizuku equivalents — desktop doesn't need
-  home-screen widgets, and biometric/Shizuku are Android-specific security models with no
-  meaningful desktop analog.
-- A general-purpose Android API compatibility layer. The whole point of this project (see
-  `docs/RESEARCH.md`) is that the actual stub surface needed is small and specific; if a
-  future need turns out to require broad Android API coverage, adopting or extending
-  Suwayomi's `AndroidCompat` is the better move than growing this module indefinitely.
+### Completed
+
+- [x] Compose Desktop wired into `app` module
+- [x] Navigation via `sealed interface Screen`
+- [x] Screens:
+  - `LibraryScreen` — saved manga grid (home screen)
+  - `CatalogScreen` — search/install from keiyoushi catalog
+  - `SourceBrowseScreen` — popular/search grid for one source
+  - `MangaDetailScreen` — manga details + chapters
+  - `ReaderScreen` — page-by-page reader with zoom/pan
+- [x] Library persistence via SQLDelight
+- [x] Reading progress tracking
+- [x] Reader features:
+  - Zoom/pan (scroll wheel, trackpad pinch)
+  - Keyboard navigation (←/→, PgUp/PgDn)
+  - Webtoon/vertical-scroll toggle
+- [x] Downloads (offline chapter storage)
+- [x] Library refresh ("Check for updates")
+
+## Phase 3 — Platform Integrations ✅
+
+**Goal:** Add background processes and optional features.
+
+### Completed
+
+- [x] Background library updates:
+  - `LibraryUpdateScheduler` using `ScheduledExecutorService`
+  - Runs every 60 minutes (configurable)
+  - Results shown as badges on library manga cards
+- [x] Cloudflare bypass:
+  - `CloudflareInterceptor` detects 403/503 challenges
+  - `JcefCloudflareSolver` uses JCEF for JS challenges
+  - JCEF is `compileOnly` — add to runtime classpath when needed
+  - Falls back to pass-through without JCEF
+- [x] QuickJS support:
+  - `DesktopJavaScriptEngine` uses `app.cash.quickjs:quickjs-jvm`
+  - Falls back to `javax.script` (Nashorn/GraalJS)
+  - Both are `compileOnly`
+- [x] Backups:
+  - `BackupManager` exports/imports library as JSON
+  - Timestamped backup files under `~/.mihon-desktop/backups/`
+  - Settings screen has create/restore buttons
+- [x] Packaging:
+  - `jpackage` task creates native installers
+  - dmg (macOS), deb (Linux), exe (Windows)
+  - Uses `packageUberJarForCurrentOS` for fat jar
+
+## Known Issues
+
+### Current Limitations
+
+- **JCEF natives are large** — Each platform's native bundle is ~100MB
+- **No image caching** — Pages are fetched fresh each time (except downloads)
+- **No chapter sorting/filtering** — Chapters listed in source order
+- **No batch operations** — Can't download all chapters at once or batch-remove from library
+
+### Bugs
+
+- None reported yet
+
+## Future Considerations
+
+### Potential Features
+
+- **Image caching** — Proper LRU disk cache for manga pages
+- **Chapter sorting/filtering** — Sort by name, date, or read status
+- **Batch operations** — Download all, batch-remove, etc.
+- **Notification system** — Chapter update notifications
+- **Multi-language support** — UI localization
+- **Theme customization** — Custom color schemes
+
+### Not Planned
+
+- Feature-parity Android widget/Biometric/Shizuku equivalents
+- General-purpose Android API compatibility layer
+- Android-specific security models (biometric, Shizuku)
+
+## Contributing
+
+See [CONTRIBUTING.md](../CONTRIBUTING.md) for development guidelines.
+
+## Research
+
+See [RESEARCH.md](RESEARCH.md) for the investigation into running Mihon extensions on desktop.

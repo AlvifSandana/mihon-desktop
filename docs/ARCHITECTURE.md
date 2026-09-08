@@ -1,152 +1,185 @@
 # Architecture
 
-## Module graph
+## Overview
+
+Mihon Desktop is a JVM-based manga reader that loads Android extensions from [keiyoushi/extensions](https://github.com/keiyoushi/extensions) without an Android runtime. The architecture is modular, with a strict dependency chain and minimal Android stub layer.
+
+## Module Graph
 
 ```
-platform-compat   <- Android/androidx stand-ins + networking (no Android SDK involved)
-      ^
-      |
- source-api       <- Mihon's own Source/HttpSource/CatalogueSource contracts, unmodified
-      ^
-      |
-extension-loader  <- discovers + loads a keiyoushi/Mihon extension .jar on a plain JVM
-      ^
-      |
-    app           <- Compose Desktop GUI: catalog, source browse, manga detail, reader
+platform-compat  →  source-api  →  extension-loader  →  app
 ```
 
-Each module depends only on the one below it; nothing here depends on Android Gradle
-Plugin, an Android SDK, or an emulator. `./gradlew build` runs on any JVM 21+ toolchain.
+Each module depends only on the one below. No reverse dependencies allowed.
+
+## Module Details
 
 ### `platform-compat`
 
-Two unrelated things live here together because upstream Mihon also keeps them together
-(in `core/common`) and extension bytecode references types from both:
+**Purpose:** Android/androidx stand-ins + networking
 
-1. **Android stand-ins** (`android.content.Context`/`SharedPreferences`,
-   `android.app.Application`, `android.net.Uri`, `android.graphics.*`,
-   `android.os.SystemClock`) — enough of each type's surface for `source-api`'s own code
-   (compiled here, unmodified from upstream) and extension bytecode to resolve against,
-   nothing more. See `docs/RESEARCH.md` §4 for exactly which symbols were needed and why.
-2. **Networking** (`eu.kanade.tachiyomi.network.*`) — a trimmed-down `NetworkHelper` (just
-   an `OkHttpClient` with the three interceptors extensions defensively check for),
-   `Requests.kt` (`GET`/`POST`/...), `OkHttpExtensions.kt` (the Rx/coroutine bridging
-   helpers `HttpSource` calls), and an in-memory `AndroidCookieJar`.
+This module provides JVM-native classes with the exact fully-qualified names that extension bytecode references. Two categories:
 
-Everything in this module is either copied verbatim from Mihon's actual source (where a
-file is genuinely platform-agnostic Kotlin, e.g. `Requests.kt`, `RxCoroutineBridge.kt`) or
-is a from-scratch, explicitly-documented stand-in (the `android.*` package, `NetworkHelper`,
-`CloudflareInterceptor`). The kdoc on each file says which.
+1. **Android Stand-ins** — Minimal implementations of Android types:
+   - `android.content.Context` — file path resolution
+   - `android.content.SharedPreferences` — properties file-backed persistence
+   - `android.app.Application` — singleton with `filesDir`/`cacheDir`
+   - `android.net.Uri` — string wrapper
+   - `android.graphics.*` — no-op shapes
+   - `android.os.SystemClock` — `System.currentTimeMillis()` wrapper
+
+2. **Networking** — OkHttp-based networking:
+   - `NetworkHelper` — OkHttpClient with required interceptors
+   - `Requests.kt` — `GET`/`POST`/`PUT`/`DELETE` helpers with cache control
+   - `OkHttpExtensions.kt` — Rx/coroutine bridging
+   - `AndroidCookieJar` — in-memory cookie storage
+   - `CloudflareInterceptor` — detects 403/503 challenges, delegates to JCEF solver
+
+**Critical Constraint:** FQCNs are load-bearing. Renaming or repackaging any class breaks all extensions at runtime.
 
 ### `source-api`
 
-This is upstream Mihon's `source-api` module's Kotlin files, unmodified except for
-stripping two things that don't affect behavior: Kotlin *context receivers* in
-`OkHttpExtensions.parseAs` (replaced with an explicit `Json` parameter — the function
-isn't on the hot path any sample extension has exercised yet) and the
-`@Stable`/`androidx.compose.runtime` annotation on `FilterList` (a Compose-only compiler
-hint with no runtime effect).
+**Purpose:** Mihon's Source/HttpSource/CatalogueSource contracts
 
-Keeping this module byte-for-byte close to upstream is deliberate: it's the contract
-every extension jar was actually compiled against, and any accidental behavior change
-here is exactly the kind of bug that only shows up against some extensions and not
-others.
+This is upstream Mihon's `source-api` module, copied unmodified except for:
+- Dropping `@Stable`/`@androidx.compose.runtime` annotations (no runtime effect)
+- Replacing Kotlin context receivers with explicit parameters (non-behavioral)
+
+**Critical Constraint:** Must stay close to upstream. This is the contract extension jars were compiled against.
 
 ### `extension-loader`
 
-The desktop-specific part:
+**Purpose:** Extension discovery, loading, catalog, downloads, library DB
 
-- `ExtensionMetadataReader` — parses an extension jar's `AndroidManifest.xml` as plain
-  text XML (see `docs/RESEARCH.md` §3 for why that works) to find the source class name(s),
-  factory class, display name, and NSFW flag.
-- `ExtensionLoader` — opens a `URLClassLoader` over the jar and instantiates the source
-  class(es), handling both a plain `Source` and a `SourceFactory` (multi-source jars).
-- `DesktopExtensionRuntime` — registers the Injekt singletons (`Context`, `Application`,
-  `NetworkHelper`, `Json`) that loaded source classes expect to find via `Injekt.get<T>()`.
-  Call `bootstrap()` once before the first `ExtensionLoader.load(...)`.
-- `catalog/` — fetching the *list* of available extensions and downloading one by package
-  name, instead of requiring a local jar path:
-  - `CatalogClient` — resolves keiyoushi's `repo.json` → `index_v2` → gzip+protobuf
-    catalog into a `List<CatalogExtension>` (see `docs/RESEARCH.md` §7 for why that's a
-    three-hop, two-codec chain rather than one JSON fetch).
-  - `GitHubReleaseAssetResolver` — fallback for when an extension's `.jar` isn't in the
-    same GitHub Release as its `.apk` (a real, observed quirk — see its kdoc).
-  - `ExtensionDownloader` — downloads+caches a `CatalogExtension`'s jar to a local
-    directory, trying the fast-path URL before falling back to the resolver above, then
-    verifying the result against keiyoushi's `release-assets.json` sha256 manifest
-    (skipped, not blocking, if that manifest can't be fetched). A cached file that fails
-    verification is deleted and re-downloaded rather than silently loaded.
-- `library/` — a SQLDelight schema (plugin applied directly to this module; `.sq` files
-  under `src/main/sqldelight/`) for the two things that need to survive closing the
-  window:
-  - `libraryManga` — which manga are saved, plus the `packageName`/`jarFileName` of the
-    extension that provides them (so reopening a library entry reloads that jar straight
-    from `~/.mihon-desktop/extension-cache/`, no catalog fetch needed), keyed on
-    `(sourceId, mangaUrl)`.
-  - `readingProgress` — last chapter + page read per manga, same key, upserted on every
-    page turn.
-  - `LibraryDatabase` opens `~/.mihon-desktop/library.db` via SQLDelight's plain JDBC
-    driver (`app.cash.sqldelight:sqlite-driver`) — the exact same generated
-    `MihonDesktopDatabase`/query code an Android build would get from the Android driver
-    instead; only the driver implementation differs.
-  - `LibraryRepository` wraps the generated queries in `suspend fun`s
-    (`Dispatchers.IO`-wrapped), the only thing `app` talks to.
+Key components:
 
-This mirrors Mihon's own `eu.kanade.tachiyomi.extension.util.ExtensionLoader` /
-`ExtensionStoreService`, with `PackageManager`/`DexClassLoader` swapped for
-`DocumentBuilder`/`URLClassLoader`, and Android's own network stack reused as-is
-(OkHttp is already plain JVM).
+- **`ExtensionMetadataReader`** — Parses `AndroidManifest.xml` as plain text XML to extract source class names, display name, NSFW flag
+- **`ExtensionLoader`** — Opens `URLClassLoader` over extension JAR, instantiates source classes
+- **`DesktopExtensionRuntime`** — Registers Injekt singletons (`Context`, `Application`, `NetworkHelper`, `Json`)
+- **`catalog/`** — Fetches keiyoushi catalog:
+  - `CatalogClient` — Resolves `repo.json` → `index_v2` → gzip+protobuf catalog
+  - `ExtensionDownloader` — Downloads+caches JARs, verifies sha256 manifest
+  - `GitHubReleaseAssetResolver` — Fallback for jar/apk in different releases
+- **`library/`** — SQLDelight schema:
+  - `libraryManga` — Saved manga with extension metadata
+  - `readingProgress` — Last chapter+page per manga
+  - `downloadedChapters` — Offline chapter storage
+- **`backup/`** — `BackupManager` for JSON export/import
+- **`download/`** — `DownloadManager` for offline chapter storage
+- **`cache/`** — `ImageCache` with LRU eviction
+- **`js/`** — `DesktopJavaScriptEngine` (QuickJS → javax.script fallback)
+- **`log/`** — `Logger` for structured logging
+- **`prefs/`** — `AppPreferences` for settings persistence
 
 ### `app`
 
-A Compose Desktop GUI (`org.jetbrains.compose` 1.12.0 on Kotlin 2.2.20's own Compose
-compiler plugin). `Main.kt` calls `DesktopExtensionRuntime.bootstrap()` once, then hosts a
-single `Window` whose content switches on a `sealed interface Screen`
-(`mihon.desktop.app.ui.Screen`) held in one `remember { mutableStateOf<Screen>(...) }` —
-no navigation library, no back stack beyond "one screen of each kind is ever live":
+**Purpose:** Compose Desktop UI
 
-- `CatalogScreen` — searches/installs from the live keiyoushi catalog (`CatalogClient` +
-  `ExtensionDownloader`), then either navigates straight to `SourceBrowse` (single-source
-  jar) or shows a picker dialog (multi-source jar).
-- `SourceBrowseScreen` — a `CatalogueSource`'s popular-manga grid, with search and
-  "load more" pagination.
-- `MangaDetailScreen` — calls `getMangaUpdate(fetchDetails = true, fetchChapters = true)`
-  and lists chapters.
-- `ReaderScreen` — calls `getPageList`, resolves each `Page`'s `imageUrl` via
-  `HttpSource.getImageUrl` when null, fetches bytes via `HttpSource.getImage`, and decodes
-  them with `org.jetbrains.skia.Image.makeFromEncoded(...).toComposeImageBitmap()`
-  (`AsyncImage.kt`). One page visible at a time with next/prev buttons that cross chapter
-  boundaries — no zoom/pan yet, see `docs/ROADMAP.md`.
+Single-window application with `sealed interface Screen` navigation:
 
-Run it with:
+| Screen | Purpose |
+|--------|---------|
+| `Library` | Home screen, saved manga grid |
+| `Catalog` | Browse/install from keiyoushi catalog |
+| `SourceBrowse` | Popular/search grid for one source |
+| `MangaDetail` | Manga details + chapter list |
+| `Reader` | Page-by-page reader with zoom/pan |
+| `Settings` | Configuration (updates, theme, reading direction) |
+| `DownloadManager` | Offline chapter management |
+| `ExtensionManagement` | Installed extension management |
+| `MultiSourceSearch` | Search across multiple sources |
+| `Notifications` | Notification center |
 
+Entry point: `mihon.desktop.app.MainKt`
+
+## Data Flow
+
+### Extension Loading
+
+1. User selects extension from catalog
+2. `ExtensionDownloader` downloads JAR to `~/.mihon-desktop/extension-cache/`
+3. `ExtensionLoader` opens `URLClassLoader` over JAR
+4. `DesktopExtensionRuntime.bootstrap()` registers singletons (if not already)
+5. Source class instantiated via reflection
+6. Source methods called for manga listing, chapter fetching, page loading
+
+### Library Management
+
+1. User adds manga to library via `MangaDetailScreen`
+2. `LibraryRepository` inserts into `libraryManga` table
+3. `LibraryUpdateScheduler` periodically checks for new chapters
+4. `ReadingProgress` updated on every page turn in reader
+
+### Offline Reading
+
+1. User downloads chapters via `DownloadManagerScreen`
+2. `DownloadManager` fetches pages, stores in `~/.mihon-desktop/downloads/`
+3. `ReaderScreen` checks for local files before network fetch
+
+## Design Decisions
+
+### Why Extension JARs, Not APKs
+
+Extension JARs contain standard JVM bytecode (`CAFEBABE` magic, class file version 55). APKs contain DEX bytecode (Dalvik/ART) which cannot be loaded by `URLClassLoader`. See [RESEARCH.md](RESEARCH.md) §3 for details.
+
+### Why Minimal Android Stubs
+
+Extension bytecode references Android types by name, but only a small subset is actually used. We provide JVM classes with:
+- Exact FQCNs matching extension expectations
+- Just enough behavior to satisfy `source-api`'s own code
+- Documented gaps (e.g., `CloudflareInterceptor` is pass-through without JCEF)
+
+Missing stubs manifest as `NoClassDefFoundError` at runtime, not compile time. See [RESEARCH.md](RESEARCH.md) §4-5 for the investigation process.
+
+### Why Copy Upstream Mihon Source
+
+`source-api` is the contract extension JARs were compiled against. Keeping it byte-for-byte close to upstream:
+- Ensures compatibility with all extensions
+- Makes upstream changes easy to diff against
+- Prevents subtle behavioral differences
+
+### Why SQLDelight
+
+Same generated query code Android would use, just a different `SqlDriver` implementation. This ensures:
+- Schema compatibility with upstream Mihon
+- Type-safe queries
+- Migration support
+
+## Testing
+
+Unit tests in `extension-loader/src/test/` use JUnit 4:
+
+```bash
+./gradlew :extension-loader:test
 ```
-./gradlew :app:run
-```
 
-Every network call a screen makes goes through `CatalogClient`/`ExtensionDownloader`'s
-`suspend fun`s (`Dispatchers.IO`-wrapped) or a loaded source's own suspend API, launched
-from `rememberCoroutineScope()` — nothing blocks the Compose UI thread.
+No integration tests or UI tests exist yet. Testing new extensions requires:
+1. Running the app
+2. Loading the extension
+3. Reading stack traces for missing symbols
+4. Adding stubs to `platform-compat`
 
-Note for this environment: under WSLg (`DISPLAY=:0` via Wayland, no real GPU passthrough),
-Skiko logs `Cannot create Linux GL context` once at startup and falls back to a software
-rasterizer; the window still renders and stays stable. This is expected here, not a bug in
-this project.
+See [RESEARCH.md](RESEARCH.md) §4-5 for real examples.
 
-## Design decisions worth knowing before extending this
+## Performance Considerations
 
-- **Extension jars, not `.apk`s.** `ExtensionLoader.load` only ever downloads/opens the
-  `.jar` asset from a keiyoushi release, never the `.apk` — the `.apk`'s `classes.dex`
-  cannot be loaded by a JVM `URLClassLoader` at all.
-- **`platform-compat` types must keep their exact upstream fully-qualified names.**
-  Extension bytecode was compiled against `android.content.Context`,
-  `eu.kanade.tachiyomi.network.NetworkHelper`, etc. by name — renaming or repackaging any
-  of these breaks every extension that references them, silently, at class-load time
-  rather than compile time.
-- **Prefer copying upstream Mihon source over writing new logic**, whenever the file in
-  question doesn't actually import anything Android-specific. This keeps `source-api`
-  trustworthy as *the* contract, and makes future upstream changes easy to diff against.
-- **A missing stub surfaces as `NoClassDefFoundError`/`ExceptionInInitializerError` /
-  `InjektionException`, not a compile error.** When testing a new extension for the first
-  time, expect to iterate: run it, read the one missing symbol out of the stack trace, add
-  it, re-run. `docs/RESEARCH.md` §4-5 walks through several real examples of this loop.
+- **Image caching:** `AsyncImage` uses LRU disk cache keyed on URL string
+- **Network caching:** OkHttp with 10MB cache, `GET` helper applies 10-minute cache control
+- **Background updates:** `ScheduledExecutorService` runs every 60 minutes (configurable)
+- **Coroutine usage:** All network calls are `suspend` + `Dispatchers.IO`
+
+## Security Considerations
+
+- Extension JARs are verified against keiyoushi's sha256 manifest
+- Verification is skipped (not blocking) if manifest can't be fetched
+- No sandboxing of loaded extensions (they run in the same JVM)
+- Optional JCEF integration for Cloudflare bypass
+
+## Future Considerations
+
+- **Image caching:** Proper LRU disk cache for manga pages
+- **Chapter sorting/filtering:** Currently listed in source order
+- **Batch operations:** Download all chapters, batch-remove from library
+- **Notification system:** Chapter update notifications
+
+See [ROADMAP.md](ROADMAP.md) for planned features.
