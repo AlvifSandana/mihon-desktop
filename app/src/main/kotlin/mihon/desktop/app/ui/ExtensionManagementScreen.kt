@@ -43,7 +43,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import mihon.desktop.loader.ExtensionLoader
 import mihon.desktop.loader.catalog.CatalogClient
+import mihon.desktop.loader.log.Logger
 import java.io.File
+
+private const val TAG = "ExtensionManagementScreen"
 
 private val extensionCacheDir = File(System.getProperty("user.home"), ".mihon-desktop/extension-cache")
 
@@ -177,8 +180,18 @@ fun ExtensionManagementScreen(
             text = { Text("This will remove the extension and its cached JAR file.") },
             confirmButton = {
                 TextButton(onClick = {
-                    ext.jarFile.delete()
-                    installedExtensions = installedExtensions.filter { it.packageName != ext.packageName }
+                    scope.launch {
+                        // Drop the cached loader + sidecar first: on Windows the
+                        // open jar file handle makes delete() silently fail, and
+                        // a stale sidecar would block a re-placed jar.
+                        withContext(Dispatchers.IO) {
+                            ExtensionLoader.removeCachedJar(ext.jarFile)
+                            if (!ext.jarFile.delete()) {
+                                Logger.e(TAG, "Failed to delete ${ext.jarFile}")
+                            }
+                        }
+                        installedExtensions = installedExtensions.filter { it.packageName != ext.packageName }
+                    }
                     showUninstallDialog = null
                 }) {
                     Text("Uninstall")

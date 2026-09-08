@@ -151,6 +151,22 @@ fun MangaDetailScreen(
                 downloadedMap[ch.url] = downloadManager.isChapterDownloaded(source.id, ch.url)
                 readMap[ch.url] = repository.isChapterRead(source.id, ch.url)
             }
+            // The user may have favorited this manga while chapters were still
+            // loading (seed then no-opped on an empty list) -- re-seed now so
+            // the backlog isn't recorded as updates on the next refresh.
+            // Idempotent: known chapters are skipped (INSERT OR IGNORE).
+            if (isFavorite) {
+                repository.recordNewChapters(
+                    sourceId = source.id,
+                    mangaUrl = detail.url,
+                    mangaTitle = detail.title,
+                    thumbnailUrl = detail.thumbnail_url,
+                    packageName = extensionRef.packageName,
+                    jarFileName = extensionRef.jarFileName,
+                    chapters = chapters,
+                    baseline = true,
+                )
+            }
         }.onFailure {
             Logger.e(TAG, "Failed to load manga details: ${it.message}", it)
             error = it.message ?: it.toString()
@@ -206,6 +222,18 @@ fun MangaDetailScreen(
                     author = detail.author,
                 )
                 isFavorite = true
+                // Seed the chapters that already exist at add-time as known so
+                // the first refresh doesn't record the whole backlog as updates.
+                repository.recordNewChapters(
+                    sourceId = source.id,
+                    mangaUrl = detail.url,
+                    mangaTitle = detail.title,
+                    thumbnailUrl = detail.thumbnail_url,
+                    packageName = extensionRef.packageName,
+                    jarFileName = extensionRef.jarFileName,
+                    chapters = chapters,
+                    baseline = true,
+                )
             }
         }
     }
@@ -243,7 +271,7 @@ fun MangaDetailScreen(
                 repository.markAsUnread(source.id, chapter.url)
                 readMap[chapter.url] = false
             } else {
-                repository.markAsRead(source.id, manga.url, chapter.url)
+                repository.markAsRead(source.id, manga.url, chapter.url, chapter.name)
                 readMap[chapter.url] = true
             }
         }
@@ -251,7 +279,7 @@ fun MangaDetailScreen(
 
     fun markAllAsRead() {
         scope.launch {
-            repository.markAllAsRead(source.id, manga.url, chapters.map { it.url })
+            repository.markAllAsRead(source.id, manga.url, chapters)
             for (ch in chapters) readMap[ch.url] = true
         }
     }

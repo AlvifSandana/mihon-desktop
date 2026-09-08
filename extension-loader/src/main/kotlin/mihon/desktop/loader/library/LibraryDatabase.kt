@@ -17,7 +17,15 @@ object LibraryDatabase {
 
         val dataDir = File(System.getProperty("user.home"), ".mihon-desktop")
         dataDir.mkdirs()
-        val dbFile = File(dataDir, "library.db")
+        return openDatabase(File(dataDir, "library.db")).also { instance = it }
+    }
+
+    /**
+     * Opens the database at [dbFile], creating the full SQLDelight schema for
+     * new files, and repairing/ensuring tables for existing ones. Split out from
+     * [get] so migrations can be exercised against throwaway files in tests.
+     */
+    fun openDatabase(dbFile: File): MihonDesktopDatabase {
         val isNew = !dbFile.exists()
 
         val driver = JdbcSqliteDriver("jdbc:sqlite:${dbFile.absolutePath}")
@@ -36,7 +44,7 @@ object LibraryDatabase {
             ensureTables(driver)
         }
 
-        return MihonDesktopDatabase(driver).also { instance = it }
+        return MihonDesktopDatabase(driver)
     }
 
     /**
@@ -109,6 +117,22 @@ object LibraryDatabase {
         if (hasTable(driver, "updateHistory") && !hasColumn(driver, "updateHistory", "packageName")) {
             driver.execute(null, "DROP TABLE updateHistory", 0)
         }
+        // Defensive: any updateHistory missing the jarFileName column is from an
+        // unknown intermediate shape -- the generated row mapper would fail at
+        // runtime, so drop rather than limp along.
+        if (hasTable(driver, "updateHistory") && !hasColumn(driver, "updateHistory", "jarFileName")) {
+            driver.execute(null, "DROP TABLE updateHistory", 0)
+        }
+
+        // Column additions on existing tables (cheap, non-destructive):
+        // - readChapters.chapterName (History screen shows chapter names)
+        // - updateHistory.baseline (seeds recorded at library-add time)
+        if (hasTable(driver, "readChapters") && !hasColumn(driver, "readChapters", "chapterName")) {
+            driver.execute(null, "ALTER TABLE readChapters ADD COLUMN chapterName TEXT NOT NULL DEFAULT ''", 0)
+        }
+        if (hasTable(driver, "updateHistory") && !hasColumn(driver, "updateHistory", "baseline")) {
+            driver.execute(null, "ALTER TABLE updateHistory ADD COLUMN baseline INTEGER NOT NULL DEFAULT 0", 0)
+        }
     }
 
     // JdbcSqliteDriver is synchronous, so results are always QueryResult.Value.
@@ -171,6 +195,7 @@ object LibraryDatabase {
                 sourceId INTEGER NOT NULL,
                 mangaUrl TEXT NOT NULL,
                 chapterUrl TEXT NOT NULL,
+                chapterName TEXT NOT NULL DEFAULT '',
                 readAt INTEGER NOT NULL,
                 PRIMARY KEY (sourceId, chapterUrl)
             )""",
@@ -200,6 +225,7 @@ object LibraryDatabase {
                 chapterNumber REAL,
                 packageName TEXT NOT NULL,
                 jarFileName TEXT NOT NULL,
+                baseline INTEGER NOT NULL DEFAULT 0,
                 fetchedAt INTEGER NOT NULL,
                 PRIMARY KEY (sourceId, chapterUrl)
             )""",

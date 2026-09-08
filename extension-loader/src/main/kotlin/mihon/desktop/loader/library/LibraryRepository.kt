@@ -50,6 +50,10 @@ class LibraryRepository(private val database: MihonDesktopDatabase = LibraryData
 
     suspend fun remove(sourceId: Long, mangaUrl: String) = withContext(Dispatchers.IO) {
         libraryQueries.delete(sourceId, mangaUrl)
+        // Also purge this manga's update history (baselines included): if the
+        // manga is re-added later, its chapters are re-seeded as baseline, so
+        // nothing is lost and nothing floods Updates.
+        updateHistoryQueries.deleteForManga(sourceId, mangaUrl)
     }
 
     suspend fun progressFor(sourceId: Long, mangaUrl: String): ReadingProgress? = withContext(Dispatchers.IO) {
@@ -85,24 +89,26 @@ class LibraryRepository(private val database: MihonDesktopDatabase = LibraryData
     }
 
     /** Mark a single chapter as read. */
-    suspend fun markAsRead(sourceId: Long, mangaUrl: String, chapterUrl: String) = withContext(Dispatchers.IO) {
+    suspend fun markAsRead(sourceId: Long, mangaUrl: String, chapterUrl: String, chapterName: String) = withContext(Dispatchers.IO) {
         readChapterQueries.insertOrReplace(
             sourceId = sourceId,
             mangaUrl = mangaUrl,
             chapterUrl = chapterUrl,
+            chapterName = chapterName,
             readAt = System.currentTimeMillis(),
         )
     }
 
-    /** Mark all chapters in a manga as read. */
-    suspend fun markAllAsRead(sourceId: Long, mangaUrl: String, chapterUrls: List<String>) = withContext(Dispatchers.IO) {
+    /** Mark all given chapters as read. */
+    suspend fun markAllAsRead(sourceId: Long, mangaUrl: String, chapters: List<SChapter>) = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
         database.transaction {
-            for (url in chapterUrls) {
+            for (ch in chapters) {
                 readChapterQueries.insertOrReplace(
                     sourceId = sourceId,
                     mangaUrl = mangaUrl,
-                    chapterUrl = url,
+                    chapterUrl = ch.url,
+                    chapterName = ch.name,
                     readAt = now,
                 )
             }
@@ -148,6 +154,11 @@ class LibraryRepository(private val database: MihonDesktopDatabase = LibraryData
      *
      * This is what makes the Updates tab show *new* chapters rather than every
      * chapter of every library manga on every refresh.
+     *
+     * @param baseline when true, chapters are recorded as a *seed* -- known but
+     *   never shown in Updates. Used when a manga is added to the library, so
+     *   the chapters that already existed at add-time don't flood the Updates
+     *   list on the first refresh.
      */
     suspend fun recordNewChapters(
         sourceId: Long,
@@ -157,6 +168,7 @@ class LibraryRepository(private val database: MihonDesktopDatabase = LibraryData
         packageName: String,
         jarFileName: String,
         chapters: List<SChapter>,
+        baseline: Boolean = false,
     ): List<UpdateHistory> = withContext(Dispatchers.IO) {
         val known = updateHistoryQueries.selectChapterUrls(sourceId, mangaUrl).executeAsList().toSet()
         val fresh = chapters.filter { it.url !in known }
@@ -174,12 +186,15 @@ class LibraryRepository(private val database: MihonDesktopDatabase = LibraryData
                 chapterNumber = ch.chapter_number.toDouble(),
                 packageName = packageName,
                 jarFileName = jarFileName,
+                baseline = if (baseline) 1L else 0L,
                 fetchedAt = now,
             )
         }
         database.transaction {
             for (entry in entries) {
-                updateHistoryQueries.insertOrReplace(
+                // OR IGNORE: a concurrent scheduler/refresh run may have inserted
+                // the same chapter already -- first writer wins, no clobbering.
+                updateHistoryQueries.insertOrIgnore(
                     sourceId = entry.sourceId,
                     mangaUrl = entry.mangaUrl,
                     mangaTitle = entry.mangaTitle,
@@ -189,6 +204,7 @@ class LibraryRepository(private val database: MihonDesktopDatabase = LibraryData
                     chapterNumber = entry.chapterNumber,
                     packageName = entry.packageName,
                     jarFileName = entry.jarFileName,
+                    baseline = entry.baseline,
                     fetchedAt = entry.fetchedAt,
                 )
             }
@@ -201,9 +217,13 @@ class LibraryRepository(private val database: MihonDesktopDatabase = LibraryData
         updateHistoryQueries.deleteOlderThan(olderThanMillis)
     }
 
-    /** Delete all update history entries. */
+    /**
+     * Dismisses all visible updates. Rows are converted to baseline instead of
+     * deleted: the chapters stay "known" so the next refresh doesn't resurrect
+     * them, they just never appear in the Updates list again.
+     */
     suspend fun clearAllUpdates() = withContext(Dispatchers.IO) {
-        updateHistoryQueries.deleteAll()
+        updateHistoryQueries.dismissAll()
     }
 
     // ── History (read chapters with manga info) ─────────────────────────

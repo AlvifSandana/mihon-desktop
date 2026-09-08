@@ -199,7 +199,7 @@ fun ReaderScreen(
                 val ch = chapter
                 if (ch != null && !incognitoMode) {
                     scope.launch {
-                        repository.markAsRead(source.id, manga.url, ch.url)
+                        repository.markAsRead(source.id, manga.url, ch.url, ch.name)
                     }
                 }
                 chapterIndex++
@@ -209,7 +209,7 @@ fun ReaderScreen(
                 val ch = chapter
                 if (ch != null && !incognitoMode) {
                     scope.launch {
-                        repository.markAsRead(source.id, manga.url, ch.url)
+                        repository.markAsRead(source.id, manga.url, ch.url, ch.name)
                     }
                 }
             }

@@ -2,12 +2,18 @@
 
 Replicate mihon Android's 5-tab navigation (Library, Updates, History, Browse, More) into mihon-desktop.
 
-> **Status: IMPLEMENTED** (all phases + remaining work). Post-implementation review
+> **Status: IMPLEMENTED** (all phases + remaining work + follow-ups). Post-implementation review
 > fixes applied: chapter-diffing for updates, legacy DB repair, incognito gating,
 > path-validated jar loading, off-main-thread IO, badge "unseen" semantics,
 > scheduler rescheduling, reachable global search/notifications.
-> Known follow-ups: jar load-time hash verification, per-thread DB connections,
-> LoadedExtension cache (URLClassLoader leak), History chapter names, tests.
+>
+> Follow-ups also done: baseline seeding at library-add time (existing chapters
+> never flood Updates), `chapterName` in readChapters (History shows names),
+> LoadedExtension cache keyed on (path, lastModified) (fixes URLClassLoader
+> leak, shares Source instances), sha256 sidecar tamper-evidence at jar load
+> time, and unit tests for the diff/migration/validation logic (18 new tests).
+> Known remaining: sidecar is same-user forgeable (full fix needs signing),
+> single shared JDBC connection, incognito toggle not live in open reader.
 
 ## Current State
 

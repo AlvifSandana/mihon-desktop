@@ -10,6 +10,7 @@ import kotlinx.serialization.json.decodeFromStream
 import okhttp3.OkHttpClient
 import java.io.File
 import java.security.MessageDigest
+import mihon.desktop.loader.JarIntegrity
 
 /** keiyoushi's sha256 manifest for every published apk/jar, keyed by extension package name. */
 const val KEIYOUSHI_RELEASE_ASSETS_JSON =
@@ -50,15 +51,26 @@ class ExtensionDownloader(
         val expectedSha256 = releaseAssets()[extension.packageName]?.jar?.sha256
 
         if (target.exists()) {
-            if (expectedSha256 == null || sha256Of(target) == expectedSha256) {
+            if (expectedSha256 == null) {
+                // Manifest unreachable: we cannot verify the cached file. Keep
+                // the EXISTING sidecar (it records the hash as last served) --
+                // re-recording the current on-disk content here would bless a
+                // jar that was tampered with while the app was closed.
+                return@withContext target
+            }
+            if (sha256Of(target) == expectedSha256) {
+                // Verified against upstream: (re-)record the sidecar.
+                JarIntegrity.writeSidecar(target)
                 return@withContext target
             }
             target.delete()
+            JarIntegrity.removeSidecar(target)
         }
 
         val url = resolveDownloadUrl(extension)
         downloadTo(url, target)
         verify(target, expectedSha256, extension)
+        JarIntegrity.writeSidecar(target)
         target
     }
 
@@ -67,6 +79,7 @@ class ExtensionDownloader(
         val actual = sha256Of(target)
         if (actual != expectedSha256) {
             target.delete()
+            JarIntegrity.removeSidecar(target)
             error(
                 "Downloaded ${extension.jarFileName} failed sha256 verification " +
                     "(expected $expectedSha256, got $actual) -- refusing to load it.",
@@ -119,10 +132,15 @@ class ExtensionDownloader(
 
     private fun downloadTo(url: String, target: File) {
         val tmp = File(target.parentFile, "${target.name}.part")
-        client.newCall(GET(url)).execute().use { response ->
-            check(response.isSuccessful) { "Failed to download $url: HTTP ${response.code}" }
-            tmp.outputStream().use { out -> response.body.byteStream().copyTo(out) }
+        try {
+            client.newCall(GET(url)).execute().use { response ->
+                check(response.isSuccessful) { "Failed to download $url: HTTP ${response.code}" }
+                tmp.outputStream().use { out -> response.body.byteStream().copyTo(out) }
+            }
+            check(tmp.renameTo(target)) { "Failed to move $tmp to $target" }
+        } catch (t: Throwable) {
+            tmp.delete()
+            throw t
         }
-        tmp.renameTo(target)
     }
 }

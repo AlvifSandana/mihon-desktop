@@ -166,7 +166,9 @@ fun HistoryScreen(
                                             style = MaterialTheme.typography.bodyMedium,
                                         )
                                         Text(
-                                            entry.chapterUrl.substringAfterLast("/"),
+                                            entry.chapterName.ifBlank {
+                                                entry.chapterUrl.substringAfterLast("/")
+                                            },
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis,
                                             style = MaterialTheme.typography.bodySmall,
