@@ -78,9 +78,12 @@ tasks.register("jpackage") {
         inputDir.mkdirs()
         fatJar.copyTo(File(inputDir, fatJar.name), overwrite = true)
 
+        // Windows binaries carry a ".exe" suffix that java.io.File.exists()
+        // does not resolve implicitly, so probe both names.
         val jpackageExec = System.getProperty("java.home")?.let { home ->
-            val bin = File(home, "bin/jpackage")
-            if (bin.exists()) bin.absolutePath else null
+            listOf("jpackage", "jpackage.exe")
+                .map { File(File(home, "bin"), it) }
+                .firstOrNull { it.isFile }?.absolutePath
         } ?: throw GradleException("jpackage not found. Ensure you're using JDK 14+.")
 
         outputDir.mkdirs()
