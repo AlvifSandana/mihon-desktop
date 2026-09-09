@@ -100,7 +100,11 @@ See [README.md](../README.md) for feature overview.
 - [x] Packaging:
   - `jpackage` task creates native installers
   - dmg (macOS), deb (Linux), exe (Windows)
-  - Uses `packageUberJarForCurrentOS` for fat jar
+  - Packages the `fatJar` output (bundles current-OS Compose/Skiko natives)
+  - `.github/workflows/release.yml` — push a `v*` tag (or dispatch manually) to
+    build all three platforms and publish a GitHub Release with fat JARs,
+    installers, and sha256 checksums; `-PappVersion=<x.y.z>` drives installer
+    metadata from the tag
 
 ## Phase 4 — Library & Platform Features ✅
 

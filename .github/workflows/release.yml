@@ -1,0 +1,178 @@
+name: Release
+
+# Creates a GitHub Release with build artifacts whenever a `v*` tag is pushed.
+# Can also be triggered manually (Actions tab -> Release -> Run workflow):
+# the given tag is created at the current commit if it doesn't exist yet.
+# NOTE: if the input names an existing tag, artifacts are built from the
+# commit that triggered the run (HEAD), not from the tagged commit.
+#
+# Tag format: vMAJOR.MINOR.PATCH (e.g. v1.2.3). A `-suffix` marks a prerelease
+# (v1.2.3-beta.1); the suffix is stripped from installer metadata because
+# jpackage/Windows requires a purely numeric version.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v1.2.3)'
+        required: true
+
+# Least privilege: only the release job escalates to contents: write.
+permissions:
+  contents: read
+
+env:
+  # Tag push: github.ref_name = v1.2.3. Dispatch: the tag input.
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  # Run the full build + all 377 tests once before packaging anything.
+  # Note: ci.yml only covers branch/PR pushes, not tags, so this is not a
+  # duplicate of CI for tag builds.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # Fail fast on malformed tags (also guards the GITHUB_ENV writes in the
+      # package job against newline injection) instead of dying 30 minutes
+      # into the matrix build when jpackage rejects --app-version.
+      - name: Validate tag
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::tag '$TAG' must match vMAJOR.MINOR.PATCH[-suffix]"
+            exit 1
+          fi
+
+      - name: Build and run all tests
+        run: ./gradlew build --stacktrace
+
+      - name: Upload test reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            **/build/reports/tests/
+            **/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # One job per OS: the Compose Desktop runtime (Skiko) bundles OS-specific
+  # natives via `compose.desktop.currentOs`, so both the fat JAR and the
+  # jpackage installer must be built on the target OS.
+  package:
+    name: package (${{ matrix.platform }})
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: windows-latest
+            platform: windows
+          - os: macos-latest
+            platform: macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # v1.2.3-beta.1 -> 1.2.3 (numeric-only, required by jpackage/Windows).
+      - name: Resolve version (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          RAW="${TAG#v}"
+          echo "VERSION=${RAW%%-*}" >> "$GITHUB_ENV"
+
+      - name: Resolve version (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          $raw = $env:TAG -replace '^v',''
+          "VERSION=$(($raw -split '-')[0])" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      # jpackage exe on windows-latest uses the preinstalled WiX Toolset.
+      - name: Build fat JAR and native installer
+        if: runner.os != 'Windows'
+        run: ./gradlew :app:fatJar :app:jpackage "-PappVersion=$VERSION" --stacktrace
+
+      - name: Build fat JAR and native installer (Windows)
+        if: runner.os == 'Windows'
+        run: ./gradlew.bat :app:fatJar :app:jpackage "-PappVersion=$env:VERSION" --stacktrace
+
+      - name: Stage artifacts (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p dist
+          cp app/build/libs/mihon-desktop*-all.jar "dist/mihon-desktop-${TAG#v}-${{ matrix.platform }}-all.jar"
+          cp app/build/jpackage/*.deb dist/ 2>/dev/null || true
+          cp app/build/jpackage/*.dmg dist/ 2>/dev/null || true
+          ls -l dist/
+
+      - name: Stage artifacts (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $v = $env:TAG -replace '^v',''
+          Copy-Item app/build/libs/mihon-desktop*-all.jar "dist/mihon-desktop-$v-windows-all.jar"
+          Copy-Item app/build/jpackage/*.exe dist/
+          Get-ChildItem dist/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: [verify, package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: artifacts-*
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum * > checksums.txt
+          cat checksums.txt
+
+      # Pinned by commit SHA (tag refs are mutable; this action uses
+      # GITHUB_TOKEN with contents:write).
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: Mihon Desktop ${{ env.TAG }}
+          files: dist/**
+          generate_release_notes: true
+          prerelease: ${{ contains(env.TAG, '-') }}

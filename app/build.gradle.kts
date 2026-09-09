@@ -29,6 +29,11 @@ application {
     mainClass.set("mihon.desktop.app.MainKt")
 }
 
+// Version used for installer metadata (--app-version) and the fat-jar manifest.
+// CI release builds pass -PappVersion=<x.y.z> derived from the git tag
+// (see .github/workflows/release.yml); local builds fall back to this default.
+val appVersion = (findProperty("appVersion") as String?) ?: "1.0.0"
+
 tasks.named<JavaExec>("run") {
     // so relative sample paths from the README (run from the repo root) resolve correctly
     workingDir = rootProject.projectDir
@@ -47,36 +52,46 @@ tasks.withType<AbstractCopyTask>().configureEach {
 // Requires JDK 14+ (jpackage is bundled). Run with:
 //   ./gradlew :app:jpackage
 //
+// Packages the fat jar (which already bundles the current-OS Compose/Skiko
+// natives via `compose.desktop.currentOs`), so it must run on the target OS.
 // Output goes to build/jpackage/
 // ---------------------------------------------------------------------------
 tasks.register("jpackage") {
     group = "distribution"
     description = "Create native installer using jpackage (requires JDK 14+)"
 
-    dependsOn("packageUberJarForCurrentOS")
+    dependsOn("fatJar")
 
     doLast {
-        val jarDir = File("${layout.buildDirectory.get()}/compose/jars")
-        val jars = jarDir.listFiles()?.filter { it.name.endsWith(".jar") } ?: emptyList()
-        val uberJar = jars.firstOrNull()
-            ?: throw GradleException("No uber jar found in ${jarDir}. Run packageUberJarForCurrentOS first.")
+        val libsDir = File("${layout.buildDirectory.get()}/libs")
+        val fatJar = libsDir.listFiles()?.singleOrNull { it.name.endsWith("-all.jar") }
+            ?: throw GradleException("No fat jar found in ${libsDir}. Run :app:fatJar first.")
+
+        // Stage the fat jar alone: jpackage copies *everything* under --input
+        // into the app image, and libs/ also holds the thin project jar.
+        // Wipe both dirs first so stale installers/fat jars from earlier
+        // local builds can't leak into the app image or the CI artifact glob.
+        val inputDir = File("${layout.buildDirectory.get()}/jpackage-input")
+        val outputDir = File("${layout.buildDirectory.get()}/jpackage")
+        inputDir.deleteRecursively()
+        outputDir.deleteRecursively()
+        inputDir.mkdirs()
+        fatJar.copyTo(File(inputDir, fatJar.name), overwrite = true)
 
         val jpackageExec = System.getProperty("java.home")?.let { home ->
             val bin = File(home, "bin/jpackage")
             if (bin.exists()) bin.absolutePath else null
         } ?: throw GradleException("jpackage not found. Ensure you're using JDK 14+.")
 
-        val outputDir = File("${layout.buildDirectory.get()}/jpackage")
         outputDir.mkdirs()
 
         val os = System.getProperty("os.name").lowercase()
         val appName = "Mihon Desktop"
-        val appVersion = "1.0.0"
 
         val args = mutableListOf(
             jpackageExec,
-            "--input", jarDir.absolutePath,
-            "--main-jar", uberJar.name,
+            "--input", inputDir.absolutePath,
+            "--main-jar", fatJar.name,
             "--main-class", "mihon.desktop.app.MainKt",
             "--name", appName,
             "--app-version", appVersion,
@@ -100,9 +115,12 @@ tasks.register("jpackage") {
             .directory(outputDir)
             .redirectErrorStream(true)
             .start()
+        // Drain output BEFORE waitFor(): --verbose easily exceeds the 64KB
+        // pipe buffer and would otherwise deadlock the process on write.
+        // readText() blocks until EOF, i.e. until the process exits.
+        val output = process.inputStream.bufferedReader().readText()
         val exitCode = process.waitFor()
         if (exitCode != 0) {
-            val output = process.inputStream.bufferedReader().readText()
             throw GradleException("jpackage failed (exit $exitCode):\n$output")
         }
 
@@ -125,12 +143,15 @@ tasks.register<Jar>("fatJar") {
 
     archiveClassifier.set("all")
     archiveBaseName.set("mihon-desktop")
+    // Empty version keeps the stable name mihon-desktop-all.jar (matches the
+    // run command documented in README/AGENTS.md). CI renames per release.
+    archiveVersion.set("")
 
     manifest {
         attributes(
             "Main-Class" to "mihon.desktop.app.MainKt",
             "Implementation-Title" to "Mihon Desktop",
-            "Implementation-Version" to "1.0.0",
+            "Implementation-Version" to appVersion,
         )
     }
 
