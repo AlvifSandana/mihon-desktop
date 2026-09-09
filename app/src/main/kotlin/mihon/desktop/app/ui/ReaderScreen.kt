@@ -169,7 +169,6 @@ fun ReaderScreen(
     var error by remember(chapterIndex) { mutableStateOf<String?>(null) }
     var webtoonMode by remember { mutableStateOf(false) }
     var isOffline by remember(chapterIndex) { mutableStateOf(false) }
-    var showControls by remember { mutableStateOf(true) }
     var prefsLoaded by remember { mutableStateOf(false) }
     var dualPageMode by remember { mutableStateOf(false) }
     var pageTransition by remember { mutableStateOf("none") }
@@ -249,6 +248,21 @@ fun ReaderScreen(
         }
     }
 
+    /** Save current reading progress immediately (before chapter navigation). */
+    fun saveProgressNow() {
+        if (incognitoMode || loading) return
+        val ch = chapter ?: return
+        scope.launch {
+            repository.saveProgress(
+                sourceId = source.id,
+                mangaUrl = manga.url,
+                chapterUrl = ch.url,
+                chapterName = ch.name,
+                pageIndex = pageIndex,
+            )
+        }
+    }
+
     fun toggleWebtoonMode() {
         webtoonMode = !webtoonMode
         saveReaderPrefs()
@@ -284,8 +298,8 @@ fun ReaderScreen(
                 val downloaded = downloadManager.isChapterDownloaded(source.id, ch.url)
                 if (downloaded) {
                     isOffline = true
-                    val count = downloadManager.downloadedCount(source.id, manga.url)
-                    val offlinePages = (0 until count.coerceAtLeast(1)).map { i ->
+                    val pageCount = downloadManager.getChapterPageCount(source.id, ch.url) ?: 1
+                    val offlinePages = (0 until pageCount.coerceAtLeast(1)).map { i ->
                         Page(i, url = "$i", imageUrl = "$i")
                     }
                     pages = offlinePages
@@ -420,11 +434,15 @@ fun ReaderScreen(
         when {
             dualActive -> {
                 markCurrentChapterRead()
-                if (chapterIndex < chapters.lastIndex) chapterIndex++
+                if (chapterIndex < chapters.lastIndex) {
+                    saveProgressNow()
+                    chapterIndex++
+                }
             }
             pageIndex < pages.lastIndex -> pageIndex++
             chapterIndex < chapters.lastIndex -> {
                 markCurrentChapterRead()
+                saveProgressNow()
                 chapterIndex++
             }
             else -> markCurrentChapterRead() // last page of last chapter
@@ -435,9 +453,15 @@ fun ReaderScreen(
         navDirection = -1
         when {
             dualActive && pageIndex > 0 -> pageIndex = maxOf(pageIndex - 2, 0)
-            dualActive && chapterIndex > 0 -> chapterIndex--
+            dualActive && chapterIndex > 0 -> {
+                saveProgressNow()
+                chapterIndex--
+            }
             pageIndex > 0 -> pageIndex--
-            chapterIndex > 0 -> chapterIndex--
+            chapterIndex > 0 -> {
+                saveProgressNow()
+                chapterIndex--
+            }
         }
     }
 
@@ -465,7 +489,7 @@ fun ReaderScreen(
         topBar = {
             // Reader chrome auto-hides in fullscreen; F/Esc or the floating
             // exit button restores the window.
-            if (showControls && !fullscreen) {
+            if (!fullscreen) {
                 TopAppBar(
                     title = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -577,6 +601,21 @@ fun ReaderScreen(
                             downloadManager = downloadManager,
                             sourceId = source.id,
                             isOffline = isOffline,
+                            chapterUrl = chapter?.url ?: "",
+                            onPageChanged = { index ->
+                                if (!incognitoMode && !loading) {
+                                    pageIndex = index
+                                }
+                            },
+                            onAtEnd = {
+                                if (!incognitoMode) {
+                                    markCurrentChapterRead()
+                                    if (chapterIndex < chapters.lastIndex) {
+                                        saveProgressNow()
+                                        chapterIndex++
+                                    }
+                                }
+                            },
                             modifier = Modifier.fillMaxSize(),
                         )
                     }
@@ -701,7 +740,7 @@ fun ReaderScreen(
                 }
             }
 
-            if (!webtoonMode && showControls && !fullscreen) {
+            if (!webtoonMode && !fullscreen) {
                 Column(Modifier.fillMaxWidth().padding(8.dp)) {
                     // Page slider + indicator. Dual-page pairs count as one
                     // step visually ("3-4 / 20"); the slider stays page-granular.

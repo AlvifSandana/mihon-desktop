@@ -20,7 +20,7 @@ class ImageCache(
      * Get cached image bytes for [url], or null if not cached.
      * Updates access time on hit.
      */
-    fun get(url: String): ByteArray? {
+    fun get(url: String): ByteArray? = synchronized(this) {
         val file = fileFor(url)
         if (!file.exists()) return null
         // Update access time by touching the file
@@ -32,7 +32,7 @@ class ImageCache(
      * Put image bytes into cache for [url].
      * Evicts old entries if cache exceeds max size.
      */
-    fun put(url: String, data: ByteArray) {
+    fun put(url: String, data: ByteArray) = synchronized(this) {
         val file = fileFor(url)
         file.writeBytes(data)
         evictIfNeeded()
@@ -41,35 +41,35 @@ class ImageCache(
     /**
      * Check if [url] is cached.
      */
-    fun contains(url: String): Boolean {
+    fun contains(url: String): Boolean = synchronized(this) {
         return fileFor(url).exists()
     }
 
     /**
      * Remove cached entry for [url].
      */
-    fun remove(url: String) {
+    fun remove(url: String) = synchronized(this) {
         fileFor(url).delete()
     }
 
     /**
      * Clear entire cache.
      */
-    fun clear() {
+    fun clear() = synchronized(this) {
         cacheDir.listFiles()?.forEach { it.delete() }
     }
 
     /**
      * Current cache size in bytes.
      */
-    fun size(): Long {
+    fun size(): Long = synchronized(this) {
         return cacheDir.listFiles()?.sumOf { it.length() } ?: 0L
     }
 
     /**
      * Number of cached entries.
      */
-    fun count(): Int {
+    fun count(): Int = synchronized(this) {
         return cacheDir.listFiles()?.size ?: 0
     }
 

@@ -100,6 +100,14 @@ class DownloadManager(database: MihonDesktopDatabase = LibraryDatabase.get()) {
     }
 
     /**
+     * Get the page count for a specific downloaded chapter.
+     * Returns null if the chapter is not in the download database.
+     */
+    suspend fun getChapterPageCount(sourceId: Long, chapterUrl: String): Int? = withContext(Dispatchers.IO) {
+        downloadQueries.selectOne(sourceId, chapterUrl).executeAsOneOrNull()?.pageCount?.toInt()
+    }
+
+    /**
      * Get all downloaded chapter URLs for a manga.
      */
     suspend fun downloadedChapters(sourceId: Long, mangaUrl: String): List<String> = withContext(Dispatchers.IO) {
