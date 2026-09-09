@@ -70,8 +70,29 @@ Thank you for your interest in contributing! This document provides guidelines a
 - Add stubs to `platform-compat` as needed
 
 ```bash
-./gradlew :extension-loader:test  # run unit tests
+./gradlew test                    # all modules (377 tests, JUnit 4)
+./gradlew :extension-loader:test  # 323 — loaders, catalog, queue, migration, trackers, backups, DB
+./gradlew :platform-compat:test   # 35 — network (DoH, Cloudflare), QuickJS shim
+./gradlew :app:test               # 19 — i18n string table
 ```
+
+Where tests live and the patterns to follow:
+
+- Tests mirror the source tree: `<module>/src/test/kotlin/...` next to the code they cover.
+- Repositories and managers take injectable seams — in-memory SQLite databases
+  (`TemporaryFolder`), fake `OkHttpClient`s, executor/backoff seams (`DownloadQueue`),
+  clock seams (`StatsRepository`). Inject a fake rather than hitting the network; tests
+  never sleep (the queue's backoff sleeper is injected for this reason).
+- The extension-loading pipeline is covered by an integration harness
+  (`extension-loader/src/test/.../integration/`): it compiles a synthetic extension
+  jar in-test (in-memory javac, plain-text manifest, zero network) and drives the full
+  discovery → sidecar → metadata → `URLClassLoader` → instantiation path. Extend it
+  rather than adding tests that download real extensions.
+- AWT-touching code must stay headless-safe (`SystemTray.isSupported` checks) so CI can
+  run without a display.
+
+CI (`.github/workflows/ci.yml`) runs `./gradlew build` on every push/PR (ubuntu-latest,
+Temurin 21) — PRs must keep it green.
 
 ### Commit Messages
 

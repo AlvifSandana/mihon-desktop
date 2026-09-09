@@ -12,6 +12,7 @@ Welcome to the Mihon Desktop documentation.
 - [Architecture](ARCHITECTURE.md) — Module structure, design decisions, data flow
 - [Research](RESEARCH.md) — Investigation into running Mihon extensions on desktop
 - [Roadmap](ROADMAP.md) — Project phases and future plans
+- [Navigation Implementation Plan](NAVIGATION-IMPLEMENTATION-PLAN.md) — The 5-tab navigation rework plan (implemented; includes deviations)
 
 ## Key Concepts
 
@@ -26,7 +27,7 @@ See [RESEARCH.md](RESEARCH.md) §3 for the full investigation.
 Extension bytecode references Android types by name, but only a small subset is actually used. We provide JVM classes with:
 - Exact FQCNs matching extension expectations
 - Just enough behavior to satisfy `source-api`'s own code
-- Documented gaps (e.g., `CloudflareInterceptor` is pass-through without JCEF)
+- Documented gaps (e.g., without JCEF on the classpath the `CloudflareInterceptor` detects challenges, retries once with a browser User-Agent, then fails with a clear error)
 
 See [RESEARCH.md](RESEARCH.md) §4-5 for the investigation process.
 
@@ -50,11 +51,17 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for module details.
 ### Commands
 
 ```bash
-./gradlew build              # compile all modules
+./gradlew build              # compile all modules + run all tests
 ./gradlew :app:run           # launch GUI
 ./gradlew :app:jpackage      # create native installer
-./gradlew :extension-loader:test  # run unit tests
+./gradlew test               # run all tests (377, JUnit 4)
+./gradlew :extension-loader:test   # extension-loader only (323 tests)
 ```
+
+CI (`.github/workflows/ci.yml`) runs `./gradlew build` on every push/PR
+(ubuntu-latest, Temurin 21). Tests are headless-safe; the extension-loading
+pipeline is covered by an integration harness that builds a synthetic extension
+jar in-test (no network, no real extension shipped).
 
 ### Testing Extensions
 
@@ -72,12 +79,15 @@ All data is stored in `~/.mihon-desktop/`:
 
 | Path | Contents |
 |------|----------|
-| `library.db` | Library manga and reading progress |
+| `library.db` | Library, progress, categories, history, tracker bindings |
 | `extension-cache/` | Downloaded extension JARs |
 | `downloads/` | Downloaded chapter pages |
-| `backups/` | Library backup files |
+| `backups/` | Manual backup files |
+| `backups/auto/` | Automatic backups (JSON / `.tachibk`, newest 5 per format) |
 | `http-cache/` | Network response cache |
 | `prefs/` | Extension preferences |
+| `app.properties` | App settings (theme, language, DoH, download concurrency, …) |
+| `tracker-auth.properties` | Tracker OAuth tokens (owner-only perms, excluded from backups) |
 | `jcef-bundle/` | JCEF natives (if enabled) |
 
 ## Troubleshooting
@@ -96,7 +106,7 @@ See [RESEARCH.md](RESEARCH.md) §4-5 for examples.
 
 **Solution:** Check if the extension requires:
 - Specific OkHttp interceptors (add to `NetworkHelper`)
-- QuickJS engine (add `app.cash.quickjs:quickjs-jvm` to classpath)
+- QuickJS engine (bundled by default; if it was removed, re-add `io.github.dokar3:quickjs-kt-jvm`)
 - Cloudflare bypass (add `me.friwi:jcefmaven` to classpath)
 
 ### Build Fails

@@ -162,19 +162,23 @@ Mihon file (`UncaughtExceptionInterceptor`, `UserAgentInterceptor`, `SystemClock
 consciously stand in for something Android-specific with a documented gap
 (`CloudflareInterceptor` — see below).
 
-## 6. Known gaps (not solved, intentionally)
+## 6. Known gaps and how they resolved
 
 - **Cloudflare / JS-challenge bypass.** Upstream's `CloudflareInterceptor` drives an
   `android.webkit.WebView` to solve the challenge page. There's no WebView on a JVM
-  desktop. The stub here (`platform-compat`'s `CloudflareInterceptor`) is a pass-through
-  — extensions that merely *check the interceptor is present* keep working, but a site
-  actually behind an active Cloudflare challenge will fail. Fixing this for real needs an
-  embedded browser engine (JCEF/KCEF are the most likely candidates) driving the same
-  challenge-solving flow.
-- **QuickJS / in-source JS execution.** Mihon's `core/common` binds `quickjs-android`
-  specifically. Not yet exercised by the three sample extensions above; will need a
-  JVM-targeted QuickJS binding (or another embeddable JS engine) if/when an extension
-  that needs it is tested.
+  desktop. The interceptor here now detects challenges properly (`cf-mitigated`
+  header + bounded body scan) and retries once with a browser-like User-Agent;
+  without JCEF on the classpath a persistent challenge fails with a clear
+  `CloudflareChallengeException` instead of a parse error. Actually solving the
+  JS challenge still needs an embedded browser engine (JCEF/KCEF are the most
+  likely candidates) — `JcefCloudflareSolver` drives it when present.
+- **QuickJS / in-source JS execution.** Solved: `platform-compat` ships an
+  `app.cash.quickjs.QuickJs` compatibility shim (the FQCN extension bytecode
+  links against) backed by `io.github.dokar3:quickjs-kt-jvm`, whose
+  self-contained JNI natives cover Linux x64/aarch64, macOS x64/aarch64 and
+  Windows x64. The original `app.cash.quickjs:quickjs-jvm` was rejected: its
+  Linux native links against system `libc++.so.1`/`libc++abi.so.1`, which
+  stock distros don't ship.
 - **Extensions that read Android resources or assets beyond the manifest/icon** (rare,
   but the interface allows it) aren't covered by this stub layer yet.
 
@@ -229,3 +233,32 @@ This project exists because the stub surface turned out to be far smaller than e
 which makes a from-scratch, Mihon-code-based desktop client a tractable alternative when
 the goal is specifically to keep Mihon's own UI/UX and codebase lineage rather than adopt
 a different app's architecture.
+
+## 9. `.tachibk` backup format findings (Mihon interop)
+
+Implementing `.tachibk` import/export surfaced several facts about Mihon's backup format
+that aren't written down anywhere upstream (see `extension-loader/.../backup/tachibk/TachibkModels.kt`
+for the source links, verified against Mihon v0.20.4):
+
+- **There is no `.proto` file anymore.** Mihon encodes backups with
+  kotlinx.serialization.protobuf over `@ProtoNumber`-annotated model classes
+  (`Backup.kt`, `BackupManga.kt`, …). The old Tachiyomi `.proto` era files that float
+  around the internet disagree with current Mihon on several field numbers.
+- **Concrete deviations from the old `.proto` assumptions:** `BackupChapter` has no
+  `lastReadAt` (its `lastPageRead` *is* field 6), `BackupManga.status` is field 8,
+  `BackupCategory.flags` is field 100, and `BackupManga.categories` holds category
+  **order values**, not indices — the restorer resolves them via
+  `backupCategories.associateBy { it.order }`.
+- **kotlinx.protobuf follows proto3 default omission**: a field written with its
+  zero-value is dropped from the wire. For fields *with* defaults that's harmless, but
+  `BackupHistory.lastRead` has **no default** — encoding it as 0 omits the field and
+  Mihon's restorer errors out per-manga. Our exporter stamps `lastRead` with the export
+  time instead of 0 (`TachibkManager`).
+- **Validation strategy that worked**: don't trust either side's wire format claims —
+  round-trip our hand-written codec's output through the real
+  `kotlinx.serialization.protobuf` serializer (the exact one Android Mihon uses) in
+  `TachibkKotlinxInteropTest`. That test caught every field-number mistake before it
+  reached a real device.
+- **Import subset policy**: manga whose source is neither installed nor referenced by an
+  existing library row are skipped (and counted) rather than imported as rows with an
+  empty `jarFileName` — such a row can never resolve to a loadable source on desktop.

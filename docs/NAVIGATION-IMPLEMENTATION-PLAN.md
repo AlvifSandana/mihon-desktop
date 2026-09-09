@@ -11,9 +11,25 @@ Replicate mihon Android's 5-tab navigation (Library, Updates, History, Browse, M
 > never flood Updates), `chapterName` in readChapters (History shows names),
 > LoadedExtension cache keyed on (path, lastModified) (fixes URLClassLoader
 > leak, shares Source instances), sha256 sidecar tamper-evidence at jar load
-> time, and unit tests for the diff/migration/validation logic (18 new tests).
+> time, and unit tests for the diff/migration/validation logic.
+>
+> Later additions implemented beyond this plan: **MigrationTab → MigrateMangaScreen**
+> (a 4-step wizard: pick manga → pick target source → options → run, with
+> auto/manual title matching — richer than the "list sources → click to migrate"
+> shape sketched in Phase 3c), **Categories** (DB + CategoriesScreen + library
+> filter + per-manga assignment, replacing the "future" markers in the MoreScreen
+> sketch), **Stats** (StatsScreen via StatsRepository), per-source settings
+> (`SourceSettings` screen), and live incognito reactivity in an open reader
+> (preference listener, no restart needed).
+>
+> Deviations from the plan as written: the tab shell uses Material 3
+> `NavigationRail` (desktop-appropriate) rather than `NavigationSuiteScaffold`;
+> the Updates/History badge data comes from the `updateHistory`/
+> `updates.last_seen_timestamp` mechanism described in Phase 5, and the Browse
+> badge is extension-update count via `ExtensionUpdateManager.pendingUpdates`.
+>
 > Known remaining: sidecar is same-user forgeable (full fix needs signing),
-> single shared JDBC connection, incognito toggle not live in open reader.
+> single shared JDBC connection.
 
 ## Current State
 

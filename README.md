@@ -11,12 +11,16 @@ A desktop manga reader that runs [Mihon](https://github.com/mihonapp/mihon)'s An
 
 Mihon Desktop loads real extension `.jar` files from [keiyoushi/extensions](https://github.com/keiyoushi/extensions) and reads manga through them:
 
-- Browse and install from the live keiyoushi catalog (~1400 extensions)
-- Search manga, view details and chapters
-- Read chapters with zoom/pan and webtoon mode
-- Persistent library with reading progress
-- Download chapters for offline reading
-- Export/import backups
+- Browse, install, and update extensions from the live keiyoushi catalog (~1400 extensions)
+- Search manga per-source or globally across all installed sources, with full source filters
+- View details and chapters (sort, filter, batch download)
+- Read chapters with zoom/pan, webtoon mode, dual-page, transitions, and fullscreen
+- Persistent library with reading progress, categories, and reading stats
+- Download chapters for offline reading with a concurrent, pausable download queue
+- Migrate your library between sources (auto/manual title matching)
+- Sync reading progress to AniList and MyAnimeList
+- Export/import backups (JSON, or Mihon-compatible `.tachibk`) with optional auto-backup
+- OS notifications, 8 theme presets, English/Indonesian UI
 
 All powered by a minimal Android stub layer — just enough classes with the right names to satisfy extension bytecode.
 
@@ -58,13 +62,24 @@ Single file, no installation required. Just needs JDK 21+ installed.
 |---------|--------|
 | Extension catalog | ✅ Browse/search ~1400 live keiyoushi extensions |
 | Extension installation | ✅ One-click download and install |
+| Extension updates | ✅ Version check, update badge, per-extension and "update all" |
 | Library management | ✅ Persistent manga library with progress |
-| Chapter reader | ✅ Zoom/pan, keyboard nav, webtoon mode |
-| Offline reading | ✅ Download chapters for offline access |
-| Background updates | ✅ Automatic library update checks |
-| Backups | ✅ Export/import library as JSON |
-| Cloudflare bypass | ✅ Optional JCEF integration |
-| QuickJS support | ✅ Optional real QuickJS engine |
+| Categories | ✅ Create/rename/reorder, per-manga assignment, library filter |
+| Global search | ✅ Search across all installed sources at once |
+| Chapter reader | ✅ Zoom/pan, keyboard nav, webtoon, dual-page, transitions, fullscreen |
+| Offline reading | ✅ Download queue with concurrency, pause/cancel/retry |
+| Batch chapter actions | ✅ Select-mode download, mark all read/unread |
+| Migration | ✅ Move the library between sources (4-step wizard) |
+| Trackers | ✅ AniList + MyAnimeList sync (token-paste OAuth) |
+| Stats | ✅ Library totals, per-source/category breakdowns, reading activity |
+| Background updates | ✅ Automatic library update checks (configurable/disableable) |
+| Backups | ✅ JSON export/import + Mihon-compatible `.tachibk` + auto-backup |
+| Notifications | ✅ In-app center + OS notifications (tray) |
+| Themes | ✅ 8 light/dark presets |
+| Localization | ✅ English and Indonesian, live switch |
+| DNS-over-HTTPS | ✅ Optional (Google/Cloudflare) with system-DNS fallback |
+| Cloudflare bypass | ✅ Challenge detection + UA retry; JCEF solver when added |
+| QuickJS support | ✅ Real QuickJS engine bundled by default (5 platforms) |
 
 ## Architecture
 
@@ -74,26 +89,37 @@ platform-compat  →  source-api  →  extension-loader  →  app
 
 | Module | Purpose |
 |--------|---------|
-| `platform-compat` | Android stand-ins (Context, SharedPreferences) + networking |
+| `platform-compat` | Android stand-ins (Context, SharedPreferences) + networking (DoH, Cloudflare) + QuickJS shim |
 | `source-api` | Mihon's Source/HttpSource/CatalogueSource contracts |
-| `extension-loader` | Extension discovery, loading, catalog, downloads, library DB |
-| `app` | Compose Desktop UI |
+| `extension-loader` | Extension discovery/loading/updates, catalog, download queue, library DB, migration, trackers, backups |
+| `app` | Compose Desktop UI (5-tab), i18n, themes |
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed module documentation.
 
 ## Optional Dependencies
 
+The QuickJS JavaScript engine (needed by JS-executing extensions — obfuscated
+sources, Cloudflare-bypass scripts) is **bundled by default** as
+`io.github.dokar3:quickjs-kt-jvm`, exposed to extensions through an
+`app.cash.quickjs` compatibility shim in `platform-compat` (the exact package
+extension jars are compiled against). Self-contained natives ship for Linux
+x64/aarch64, macOS x64/aarch64, and Windows x64 — no system libraries required.
+
+Tracker login uses token-paste OAuth: AniList's implicit grant has you paste an
+access token, MyAnimeList's PKCE flow has you paste the redirect URL (or just
+the `code` value). No embedded browser or localhost callback server needed.
+
 Add to runtime classpath for full feature set:
 
 ```kotlin
-// Real QuickJS engine for JS-executing extensions
-implementation("app.cash.quickjs:quickjs-jvm:0.9.2")
-
 // Cloudflare bypass (JCEF) — natives are ~100MB per platform
 implementation("me.friwi:jcefmaven:146.0.10")
 ```
 
-Without these, the app still works — extensions that check interceptor presence don't crash, and JS execution falls back to `javax.script` (Nashorn/GraalJS if available).
+Without JCEF the app still works — Cloudflare challenges are detected
+(`cf-mitigated` header), retried once with a browser User-Agent, and persistent
+challenges fail with a clear `CloudflareChallengeException` instead of a parse
+error.
 
 ## Data Storage
 
@@ -101,12 +127,15 @@ All data is stored in `~/.mihon-desktop/`:
 
 | Path | Contents |
 |------|----------|
-| `library.db` | Library manga and reading progress |
+| `library.db` | Library, progress, categories, history, tracker bindings |
 | `extension-cache/` | Downloaded extension JARs |
 | `downloads/` | Downloaded chapter pages |
-| `backups/` | Library backup files |
+| `backups/` | Manual backup files |
+| `backups/auto/` | Automatic backups (JSON / `.tachibk`, newest 5 per format) |
 | `http-cache/` | Network response cache |
 | `prefs/` | Extension preferences |
+| `app.properties` | App settings (theme, language, DoH, download concurrency, …) |
+| `tracker-auth.properties` | Tracker OAuth tokens (owner-only perms, excluded from backups) |
 | `jcef-bundle/` | JCEF natives (if enabled) |
 
 ## How It Works
