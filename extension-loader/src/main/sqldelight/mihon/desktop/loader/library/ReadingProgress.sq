@@ -14,3 +14,6 @@ SELECT * FROM readingProgress WHERE sourceId = ? AND mangaUrl = ?;
 upsert:
 INSERT OR REPLACE INTO readingProgress(sourceId, mangaUrl, chapterUrl, chapterName, pageIndex, updatedAt)
 VALUES (?, ?, ?, ?, ?, ?);
+
+deleteForManga:
+DELETE FROM readingProgress WHERE sourceId = ? AND mangaUrl = ?;

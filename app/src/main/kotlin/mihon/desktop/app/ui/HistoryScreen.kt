@@ -45,6 +45,8 @@ import kotlinx.coroutines.withContext
 import mihon.desktop.loader.ExtensionLoader
 import mihon.desktop.loader.library.LibraryRepository
 import mihon.desktop.loader.library.SelectAllWithManga
+import mihon.desktop.app.i18n.Strings
+import mihon.desktop.app.i18n.t
 
 /**
  * Shows reading history grouped by date. Each item shows manga thumbnail, title,
@@ -86,7 +88,7 @@ fun HistoryScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("History") },
+                title = { Text(t("history_title")) },
                 actions = {
                     if (entries.isNotEmpty()) {
                         IconButton(onClick = {
@@ -95,7 +97,7 @@ fun HistoryScreen(
                                 entries = emptyList()
                             }
                         }) {
-                            Icon(Icons.Filled.DeleteSweep, contentDescription = "Clear all")
+                            Icon(Icons.Filled.DeleteSweep, contentDescription = t("action_clear_all"))
                         }
                     }
                 },
@@ -108,13 +110,16 @@ fun HistoryScreen(
                     CircularProgressIndicator()
                 }
                 error != null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("Error: $error", color = MaterialTheme.colorScheme.error)
+                    Text(t("common_error_prefix", error), color = MaterialTheme.colorScheme.error)
                 }
                 entries.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("No reading history")
+                    Text(t("history_empty"))
                 }
                 else -> {
-                    val grouped = remember(entries) {
+                    // Tick is a remember key so the (non-composable)
+                    // formatDateGroupLabel re-runs on a live language swap.
+                    val tick = Strings.languageTick.intValue
+                    val grouped = remember(entries, tick) {
                         entries.groupBy { entry -> formatDateGroupLabel(entry.readAt) }
                     }
 
@@ -176,7 +181,7 @@ fun HistoryScreen(
                                         )
                                     }
                                     Text(
-                                        formatRelativeTime(entry.readAt),
+                                        relativeTimeLabel(entry.readAt),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )

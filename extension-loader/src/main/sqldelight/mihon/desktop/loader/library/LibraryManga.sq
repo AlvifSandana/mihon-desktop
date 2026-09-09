@@ -24,3 +24,19 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 delete:
 DELETE FROM libraryManga WHERE sourceId = ? AND mangaUrl = ?;
+
+-- Updates metadata in place, keeping the autoincrement id (and addedAt) stable.
+-- Used when re-adding a manga already in the library: INSERT OR REPLACE would
+-- assign a fresh id and orphan any mangaCategory mappings pointing at the old one.
+updateMeta:
+UPDATE libraryManga
+SET packageName = ?, jarFileName = ?, extensionName = ?, title = ?, thumbnailUrl = ?, author = ?
+WHERE id = ?;
+
+-- Re-points every row of one extension package at a new jar file name.
+-- Used after an extension update swaps in a jar under a new name: persisted
+-- rows must never reference the deleted old jar.
+updateJarFileName:
+UPDATE libraryManga
+SET jarFileName = :newJarFileName
+WHERE packageName = :packageName;

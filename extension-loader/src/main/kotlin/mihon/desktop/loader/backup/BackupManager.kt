@@ -6,6 +6,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import mihon.desktop.loader.library.LibraryDatabase
 import mihon.desktop.loader.library.MihonDesktopDatabase
+import mihon.desktop.loader.prefs.AppPreferences
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -20,7 +21,19 @@ import java.util.Locale
  *
  * Backups are stored under `~/.mihon-desktop/backups/` with timestamped filenames.
  */
-class BackupManager(database: MihonDesktopDatabase = LibraryDatabase.get()) {
+class BackupManager(
+    database: MihonDesktopDatabase = LibraryDatabase.get(),
+    /**
+     * Notified after every successful JSON export/import so the auto-backup
+     * clock resets. Default writes the [AppPreferences] timestamp; tests pass
+     * a no-op to avoid touching the real user home.
+     */
+    private val onBackupActivity: () -> Unit = {
+        runCatching {
+            AppPreferences.setLong(AppPreferences.KEY_AUTO_BACKUP_LAST_AT, System.currentTimeMillis())
+        }
+    },
+) {
     private val libraryQueries = database.libraryMangaQueries
     private val progressQueries = database.readingProgressQueries
     private val downloadQueries = database.downloadedChapterQueries
@@ -29,72 +42,79 @@ class BackupManager(database: MihonDesktopDatabase = LibraryDatabase.get()) {
 
     /**
      * Export the current library to a JSON file.
-     * Returns the path to the created backup file.
+     *
+     * @param dir output directory (default `~/.mihon-desktop/backups`; the
+     *   auto-backup scheduler passes its own `backups/auto` dir)
+     * @param prefix file-name prefix (default `mihon-desktop-backup`; the
+     *   auto-backup scheduler passes `auto-backup`)
+     * @return the path to the created backup file.
      */
-    suspend fun exportBackup(): File = withContext(Dispatchers.IO) {
-        backupsDir.mkdirs()
+    suspend fun exportBackup(dir: File = backupsDir, prefix: String = "mihon-desktop-backup"): File =
+        withContext(Dispatchers.IO) {
+            dir.mkdirs()
 
-        val libraryManga = libraryQueries.selectAll().executeAsList().map { entry ->
-            BackupLibraryManga(
-                sourceId = entry.sourceId,
-                packageName = entry.packageName,
-                jarFileName = entry.jarFileName,
-                extensionName = entry.extensionName,
-                mangaUrl = entry.mangaUrl,
-                title = entry.title,
-                thumbnailUrl = entry.thumbnailUrl,
-                author = entry.author,
-                addedAt = entry.addedAt,
-            )
-        }
-
-        val readingProgress = mutableMapOf<String, BackupReadingProgress>()
-        for (entry in libraryManga) {
-            val progress = progressQueries.selectForManga(entry.sourceId, entry.mangaUrl).executeAsOneOrNull()
-            if (progress != null) {
-                val key = "${entry.sourceId}:${entry.mangaUrl}"
-                readingProgress[key] = BackupReadingProgress(
-                    sourceId = progress.sourceId,
-                    mangaUrl = progress.mangaUrl,
-                    chapterUrl = progress.chapterUrl,
-                    chapterName = progress.chapterName,
-                    pageIndex = progress.pageIndex,
-                    updatedAt = progress.updatedAt,
+            val libraryManga = libraryQueries.selectAll().executeAsList().map { entry ->
+                BackupLibraryManga(
+                    sourceId = entry.sourceId,
+                    packageName = entry.packageName,
+                    jarFileName = entry.jarFileName,
+                    extensionName = entry.extensionName,
+                    mangaUrl = entry.mangaUrl,
+                    title = entry.title,
+                    thumbnailUrl = entry.thumbnailUrl,
+                    author = entry.author,
+                    addedAt = entry.addedAt,
                 )
             }
-        }
 
-        val downloadedChapters = mutableMapOf<String, List<BackupDownloadedChapter>>()
-        for (entry in libraryManga) {
-            val downloads = downloadQueries.selectForManga(entry.sourceId, entry.mangaUrl).executeAsList()
-            if (downloads.isNotEmpty()) {
-                val key = "${entry.sourceId}:${entry.mangaUrl}"
-                downloadedChapters[key] = downloads.map { dl ->
-                    BackupDownloadedChapter(
-                        sourceId = dl.sourceId,
-                        mangaUrl = dl.mangaUrl,
-                        chapterUrl = dl.chapterUrl,
-                        chapterName = dl.chapterName,
-                        pageCount = dl.pageCount,
-                        downloadedAt = dl.downloadedAt,
+            val readingProgress = mutableMapOf<String, BackupReadingProgress>()
+            for (entry in libraryManga) {
+                val progress = progressQueries.selectForManga(entry.sourceId, entry.mangaUrl).executeAsOneOrNull()
+                if (progress != null) {
+                    val key = "${entry.sourceId}:${entry.mangaUrl}"
+                    readingProgress[key] = BackupReadingProgress(
+                        sourceId = progress.sourceId,
+                        mangaUrl = progress.mangaUrl,
+                        chapterUrl = progress.chapterUrl,
+                        chapterName = progress.chapterName,
+                        pageIndex = progress.pageIndex,
+                        updatedAt = progress.updatedAt,
                     )
                 }
             }
+
+            val downloadedChapters = mutableMapOf<String, List<BackupDownloadedChapter>>()
+            for (entry in libraryManga) {
+                val downloads = downloadQueries.selectForManga(entry.sourceId, entry.mangaUrl).executeAsList()
+                if (downloads.isNotEmpty()) {
+                    val key = "${entry.sourceId}:${entry.mangaUrl}"
+                    downloadedChapters[key] = downloads.map { dl ->
+                        BackupDownloadedChapter(
+                            sourceId = dl.sourceId,
+                            mangaUrl = dl.mangaUrl,
+                            chapterUrl = dl.chapterUrl,
+                            chapterName = dl.chapterName,
+                            pageCount = dl.pageCount,
+                            downloadedAt = dl.downloadedAt,
+                        )
+                    }
+                }
+            }
+
+            val backup = BackupData(
+                version = BACKUP_VERSION,
+                exportedAt = System.currentTimeMillis(),
+                libraryManga = libraryManga,
+                readingProgress = readingProgress,
+                downloadedChapters = downloadedChapters,
+            )
+
+            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+            val file = File(dir, "$prefix-$timestamp.json")
+            file.writeText(json.encodeToString(BackupData.serializer(), backup))
+            runCatching(onBackupActivity)
+            file
         }
-
-        val backup = BackupData(
-            version = BACKUP_VERSION,
-            exportedAt = System.currentTimeMillis(),
-            libraryManga = libraryManga,
-            readingProgress = readingProgress,
-            downloadedChapters = downloadedChapters,
-        )
-
-        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        val file = File(backupsDir, "mihon-desktop-backup-$timestamp.json")
-        file.writeText(json.encodeToString(BackupData.serializer(), backup))
-        file
-    }
 
     /**
      * Import a backup from a JSON file. Existing data is merged (not replaced).
@@ -104,17 +124,35 @@ class BackupManager(database: MihonDesktopDatabase = LibraryDatabase.get()) {
         val data = json.decodeFromString(BackupData.serializer(), file.readText())
 
         for (manga in data.libraryManga) {
-            libraryQueries.insertOrReplace(
-                sourceId = manga.sourceId,
-                packageName = manga.packageName,
-                jarFileName = manga.jarFileName,
-                extensionName = manga.extensionName,
-                mangaUrl = manga.mangaUrl,
-                title = manga.title,
-                thumbnailUrl = manga.thumbnailUrl,
-                author = manga.author,
-                addedAt = manga.addedAt,
-            )
+            // Same in-place update pattern as LibraryRepository.add: on an
+            // existing (sourceId, mangaUrl) row, INSERT OR REPLACE would churn
+            // the autoincrement id and orphan any mangaCategory mappings
+            // pointing at the old one. Update metadata instead; insert only
+            // genuinely new rows.
+            val existing = libraryQueries.selectOne(manga.sourceId, manga.mangaUrl).executeAsOneOrNull()
+            if (existing != null) {
+                libraryQueries.updateMeta(
+                    packageName = manga.packageName,
+                    jarFileName = manga.jarFileName,
+                    extensionName = manga.extensionName,
+                    title = manga.title,
+                    thumbnailUrl = manga.thumbnailUrl,
+                    author = manga.author,
+                    id = existing.id,
+                )
+            } else {
+                libraryQueries.insertOrReplace(
+                    sourceId = manga.sourceId,
+                    packageName = manga.packageName,
+                    jarFileName = manga.jarFileName,
+                    extensionName = manga.extensionName,
+                    mangaUrl = manga.mangaUrl,
+                    title = manga.title,
+                    thumbnailUrl = manga.thumbnailUrl,
+                    author = manga.author,
+                    addedAt = manga.addedAt,
+                )
+            }
         }
 
         for ((_, progress) in data.readingProgress) {
@@ -141,6 +179,7 @@ class BackupManager(database: MihonDesktopDatabase = LibraryDatabase.get()) {
             }
         }
 
+        runCatching(onBackupActivity)
         data.libraryManga.size
     }
 

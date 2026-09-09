@@ -20,6 +20,9 @@ dependencies {
     implementation(compose.material3)
     @Suppress("DEPRECATION")
     implementation(compose.materialIconsExtended)
+
+    // Test dependencies
+    testImplementation("junit:junit:4.13.2")
 }
 
 application {

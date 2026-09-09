@@ -2,6 +2,8 @@ CREATE TABLE readerPreferences (
     sourceId INTEGER NOT NULL,
     mangaUrl TEXT NOT NULL,
     webtoonMode INTEGER NOT NULL DEFAULT 0,
+    dualPageMode INTEGER NOT NULL DEFAULT 0,
+    pageTransition TEXT NOT NULL DEFAULT 'none',
     updatedAt INTEGER NOT NULL,
     PRIMARY KEY (sourceId, mangaUrl)
 );
@@ -10,8 +12,8 @@ selectOne:
 SELECT * FROM readerPreferences WHERE sourceId = ? AND mangaUrl = ?;
 
 upsert:
-INSERT OR REPLACE INTO readerPreferences(sourceId, mangaUrl, webtoonMode, updatedAt)
-VALUES (?, ?, ?, ?);
+INSERT OR REPLACE INTO readerPreferences(sourceId, mangaUrl, webtoonMode, dualPageMode, pageTransition, updatedAt)
+VALUES (?, ?, ?, ?, ?, ?);
 
 delete:
 DELETE FROM readerPreferences WHERE sourceId = ? AND mangaUrl = ?;

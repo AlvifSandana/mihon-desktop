@@ -1,0 +1,41 @@
+-- Aggregate queries for the Stats screen. Read-only: no table is owned by
+-- this file; every query reads tables declared in the other .sq files.
+
+countLibraryManga:
+SELECT COUNT(*) FROM libraryManga;
+
+-- Manga per source, largest first. extensionName (the jar's display name) is
+-- the human-readable grouping; sourceId is unique per source within a jar.
+mangaPerSource:
+SELECT extensionName, COUNT(*) AS mangaCount
+FROM libraryManga
+GROUP BY extensionName
+ORDER BY mangaCount DESC, extensionName;
+
+countReadChapters:
+SELECT COUNT(*) FROM readChapters;
+
+-- Read chapters per source, joined through the library so rows can be
+-- attributed to the extension the manga came from (same join shape as
+-- ReadChapter.sq selectAllWithManga).
+readChaptersPerSource:
+SELECT lm.extensionName, COUNT(*) AS chapterCount
+FROM readChapters rc
+JOIN libraryManga lm ON rc.sourceId = lm.sourceId AND rc.mangaUrl = lm.mangaUrl
+GROUP BY lm.extensionName
+ORDER BY chapterCount DESC, lm.extensionName;
+
+-- Chapters read since a timestamp (epoch ms) -- powers the 7/30-day activity rows.
+countReadChaptersSince:
+SELECT COUNT(*) FROM readChapters WHERE readAt >= ?;
+
+countDownloadedChapters:
+SELECT COUNT(*) FROM downloadedChapters;
+
+countCategories:
+SELECT COUNT(*) FROM category;
+
+-- Library manga mapped to at least one category; the complement of
+-- totalManga is the "Default" (uncategorized) count.
+countMangaInCategories:
+SELECT COUNT(DISTINCT mangaId) FROM mangaCategory;

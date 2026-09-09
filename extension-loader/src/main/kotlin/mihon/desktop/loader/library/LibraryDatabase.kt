@@ -127,11 +127,18 @@ object LibraryDatabase {
         // Column additions on existing tables (cheap, non-destructive):
         // - readChapters.chapterName (History screen shows chapter names)
         // - updateHistory.baseline (seeds recorded at library-add time)
+        // - readerPreferences.dualPageMode / pageTransition (reader features)
         if (hasTable(driver, "readChapters") && !hasColumn(driver, "readChapters", "chapterName")) {
             driver.execute(null, "ALTER TABLE readChapters ADD COLUMN chapterName TEXT NOT NULL DEFAULT ''", 0)
         }
         if (hasTable(driver, "updateHistory") && !hasColumn(driver, "updateHistory", "baseline")) {
             driver.execute(null, "ALTER TABLE updateHistory ADD COLUMN baseline INTEGER NOT NULL DEFAULT 0", 0)
+        }
+        if (hasTable(driver, "readerPreferences") && !hasColumn(driver, "readerPreferences", "dualPageMode")) {
+            driver.execute(null, "ALTER TABLE readerPreferences ADD COLUMN dualPageMode INTEGER NOT NULL DEFAULT 0", 0)
+        }
+        if (hasTable(driver, "readerPreferences") && !hasColumn(driver, "readerPreferences", "pageTransition")) {
+            driver.execute(null, "ALTER TABLE readerPreferences ADD COLUMN pageTransition TEXT NOT NULL DEFAULT 'none'", 0)
         }
     }
 
@@ -203,6 +210,8 @@ object LibraryDatabase {
                 sourceId INTEGER NOT NULL,
                 mangaUrl TEXT NOT NULL,
                 webtoonMode INTEGER NOT NULL DEFAULT 0,
+                dualPageMode INTEGER NOT NULL DEFAULT 0,
+                pageTransition TEXT NOT NULL DEFAULT 'none',
                 updatedAt INTEGER NOT NULL,
                 PRIMARY KEY (sourceId, mangaUrl)
             )""",
@@ -228,6 +237,33 @@ object LibraryDatabase {
                 baseline INTEGER NOT NULL DEFAULT 0,
                 fetchedAt INTEGER NOT NULL,
                 PRIMARY KEY (sourceId, chapterUrl)
+            )""",
+            // Categories (schema v2). New tables only, so existing DBs keep all
+            // data; the IF NOT EXISTS create is the whole migration.
+            """CREATE TABLE IF NOT EXISTS category (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                sortOrder INTEGER NOT NULL
+            )""",
+            """CREATE TABLE IF NOT EXISTS mangaCategory (
+                mangaId INTEGER NOT NULL REFERENCES libraryManga(id) ON DELETE CASCADE,
+                categoryId INTEGER NOT NULL REFERENCES category(id) ON DELETE CASCADE,
+                PRIMARY KEY (mangaId, categoryId)
+            )""",
+            // Tracker bindings (schema v3): one row per (library manga, tracker).
+            // SQLite FKs are off by default on the JDBC driver, so library
+            // removals delete these rows explicitly (LibraryRepository.purgeManga).
+            """CREATE TABLE IF NOT EXISTS tracker (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                mangaId INTEGER NOT NULL REFERENCES libraryManga(id) ON DELETE CASCADE,
+                trackerName TEXT NOT NULL,
+                remoteId TEXT NOT NULL,
+                title TEXT NOT NULL,
+                status INTEGER NOT NULL,
+                score REAL,
+                lastChapterRead REAL,
+                updatedAt INTEGER NOT NULL,
+                UNIQUE (mangaId, trackerName)
             )""",
         )
         for (sql in stmts) {

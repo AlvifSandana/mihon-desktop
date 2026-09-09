@@ -5,6 +5,7 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.online.HttpSource
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import mihon.desktop.loader.library.LibraryDatabase
 import mihon.desktop.loader.library.MihonDesktopDatabase
@@ -27,13 +28,19 @@ class DownloadManager(database: MihonDesktopDatabase = LibraryDatabase.get()) {
      * Download all pages for [chapter] from [source] and store them on disk.
      * Returns the number of pages downloaded, or throws on failure.
      *
+     * Cancellation is cooperative: the loop checks `ensureActive()` between
+     * pages (the in-flight page's OkHttp call is cancelled by coroutine
+     * cancellation), so a cancelled caller stops at the next page boundary.
+     * Pages already written are kept -- a re-run skips them via the
+     * file-exists check below. This is what lets [DownloadQueue] pause/resume.
+     *
      * @param onProgress optional callback invoked with (currentPage, totalPages) as each page downloads
      */
     suspend fun downloadChapter(
         source: Source,
         mangaUrl: String,
         chapter: SChapter,
-        onProgress: ((current: Int, total: Int) -> Unit)? = null,
+        onProgress: (suspend (current: Int, total: Int) -> Unit)? = null,
     ): Int = withContext(Dispatchers.IO) {
         val httpSource = source as? HttpSource
             ?: throw IllegalArgumentException("Source ${source.name} is not an HttpSource")
@@ -44,6 +51,7 @@ class DownloadManager(database: MihonDesktopDatabase = LibraryDatabase.get()) {
 
         var downloaded = 0
         for ((index, page) in pages.withIndex()) {
+            ensureActive()
             val pageFile = pageFile(chapterDir, index)
             if (pageFile.exists() && pageFile.length() > 0) {
                 downloaded++
@@ -97,6 +105,15 @@ class DownloadManager(database: MihonDesktopDatabase = LibraryDatabase.get()) {
     suspend fun downloadedChapters(sourceId: Long, mangaUrl: String): List<String> = withContext(Dispatchers.IO) {
         downloadQueries.selectForManga(sourceId, mangaUrl).executeAsList().map { record -> record.chapterUrl }
     }
+
+    /**
+     * Full downloaded-chapter records (url, name, pageCount, ...) for a manga.
+     * Migration needs the chapter names to match old downloads on the new source.
+     */
+    suspend fun downloadedChapterRecords(sourceId: Long, mangaUrl: String): List<DownloadedChapters> =
+        withContext(Dispatchers.IO) {
+            downloadQueries.selectForManga(sourceId, mangaUrl).executeAsList()
+        }
 
     /**
      * Read a downloaded page's bytes from disk.

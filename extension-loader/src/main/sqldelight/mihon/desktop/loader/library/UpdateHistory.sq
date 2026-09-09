@@ -34,3 +34,10 @@ DELETE FROM updateHistory WHERE sourceId = ? AND mangaUrl = ?;
 
 dismissAll:
 UPDATE updateHistory SET baseline = 1 WHERE baseline = 0;
+
+-- Re-points every row of one extension package at a new jar file name
+-- (extension update swapped in a jar under a new name).
+updateJarFileName:
+UPDATE updateHistory
+SET jarFileName = :newJarFileName
+WHERE packageName = :packageName;

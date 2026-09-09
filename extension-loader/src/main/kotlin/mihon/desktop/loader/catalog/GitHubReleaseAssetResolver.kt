@@ -20,8 +20,11 @@ import okhttp3.OkHttpClient
  * This is the fallback for that case: scan the most recent releases' asset lists for the
  * exact jar filename. Bounded (not a full-history search) to keep this to one or two
  * unauthenticated GitHub API calls -- see docs/RESEARCH.md for the trade-off this makes.
+ *
+ * `open` so tests can substitute a counting resolver and assert the per-session
+ * URL cache in [ExtensionDownloader] spares the 60 req/hr API budget.
  */
-class GitHubReleaseAssetResolver(
+open class GitHubReleaseAssetResolver(
     private val client: OkHttpClient,
     private val owner: String = "keiyoushi",
     private val repo: String = "extensions",
@@ -36,7 +39,7 @@ class GitHubReleaseAssetResolver(
 
     /** Returns the download URL for [fileName], scanning up to [maxReleases] recent releases. */
     @OptIn(ExperimentalSerializationApi::class)
-    fun findAssetUrl(fileName: String, maxReleases: Int = 100): String? {
+    open fun findAssetUrl(fileName: String, maxReleases: Int = 100): String? {
         var page = 1
         var scanned = 0
         while (scanned < maxReleases) {

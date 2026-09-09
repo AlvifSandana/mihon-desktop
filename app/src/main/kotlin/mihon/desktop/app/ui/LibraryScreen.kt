@@ -1,6 +1,8 @@
 package mihon.desktop.app.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -15,6 +17,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Refresh
@@ -27,6 +30,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -54,16 +58,27 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import mihon.desktop.loader.ExtensionLoader
 import mihon.desktop.loader.download.DownloadManager
+import mihon.desktop.loader.library.CategoryRepository
 import mihon.desktop.loader.library.LibraryManga
 import mihon.desktop.loader.library.LibraryRepository
+import mihon.desktop.loader.library.SelectAllWithCounts
+import mihon.desktop.loader.log.Logger
 import mihon.desktop.loader.prefs.AppPreferences
+import mihon.desktop.app.i18n.t
 
-private enum class SortMode(val label: String) {
-    TITLE("Title (A-Z)"),
-    TITLE_DESC("Title (Z-A)"),
-    RECENTLY_ADDED("Recently added"),
-    CHAPTER_COUNT("Chapter count"),
+private enum class SortMode(val labelKey: String) {
+    TITLE("library_sort_title_asc"),
+    TITLE_DESC("library_sort_title_desc"),
+    RECENTLY_ADDED("library_sort_recently_added"),
+    CHAPTER_COUNT("library_sort_chapter_count"),
 }
+
+// Category filter values persisted via AppPreferences.
+private const val CATEGORY_FILTER_ALL = "all"
+private const val CATEGORY_FILTER_DEFAULT = "default"
+private const val CATEGORY_FILTER_PREFIX = "category:"
+
+private const val TAG = "LibraryScreen"
 
 /**
  * Shows every manga the user has added to their library. Reopening one re-loads its
@@ -80,6 +95,7 @@ fun LibraryScreen(
     onBrowseExtensions: () -> Unit,
 ) {
     val repository = remember { LibraryRepository() }
+    val categoryRepository = remember { CategoryRepository() }
     val scope = rememberCoroutineScope()
     var entries by remember { mutableStateOf(listOf<LibraryManga>()) }
     var sourcesByJar by remember { mutableStateOf(mapOf<String, List<Source>>()) }
@@ -94,6 +110,52 @@ fun LibraryScreen(
     }
     // Track which manga have new chapters available: key = "sourceId:mangaUrl"
     val updatesMap = remember { mutableStateMapOf<String, Int>() }
+
+    // ── Category filter ──────────────────────────────────────────────────
+    var categories by remember { mutableStateOf(listOf<SelectAllWithCounts>()) }
+    // categoryId -> library-manga row ids in that category.
+    var categoryMangaIds by remember { mutableStateOf<Map<Long, Set<Long>>>(emptyMap()) }
+    // Row ids in at least one category; the complement is the "Default" filter.
+    var mangaIdsWithAnyCategory by remember { mutableStateOf<Set<Long>>(emptySet()) }
+    var selectedCategoryFilter by remember {
+        mutableStateOf(
+            AppPreferences.getString(
+                AppPreferences.KEY_LIBRARY_CATEGORY_FILTER,
+                CATEGORY_FILTER_ALL,
+            ),
+        )
+    }
+
+    fun selectCategoryFilter(value: String) {
+        selectedCategoryFilter = value
+        AppPreferences.setString(AppPreferences.KEY_LIBRARY_CATEGORY_FILTER, value)
+    }
+
+    LaunchedEffect(Unit) {
+        runCatching {
+            val cats = categoryRepository.allWithCounts()
+            // One query for every category's member ids -- avoids N+1 loads
+            // (one round-trip per category chip).
+            val perCategory = categoryRepository.mangaIdsByCategory()
+            Triple(cats, perCategory, categoryRepository.mangaIdsWithAnyCategory())
+        }.onSuccess { (cats, perCategory, withAny) ->
+            categories = cats
+            categoryMangaIds = perCategory
+            mangaIdsWithAnyCategory = withAny
+            // Drop a persisted selection whose category no longer exists.
+            val selectedId = selectedCategoryFilter
+                .removePrefix(CATEGORY_FILTER_PREFIX).toLongOrNull()
+            if (selectedId != null && cats.none { it.id == selectedId }) {
+                selectCategoryFilter(CATEGORY_FILTER_ALL)
+            }
+        }.onFailure {
+            if (it is CancellationException) throw it
+            Logger.e(TAG, "Failed to load categories: ${it.message}", it)
+            // Filter chips are unusable without category data -- fall back to All
+            // instead of filtering against empty (wrong) sets.
+            selectCategoryFilter(CATEGORY_FILTER_ALL)
+        }
+    }
 
     LaunchedEffect(Unit) {
         loading = true
@@ -175,7 +237,13 @@ fun LibraryScreen(
     // updatesMap is a SnapshotStateMap whose instance never changes, so we key the
     // sort computation on its size to pick up refresh results.
     val updatesTick = updatesMap.size
-    val filteredEntries = remember(entries, searchQuery, sortMode, updatesTick, downloadedKeys) {
+    // Parse the persisted "category:<id>" filter once, not once per entry.
+    val selectedCategoryId = selectedCategoryFilter
+        .removePrefix(CATEGORY_FILTER_PREFIX).toLongOrNull()
+    val filteredEntries = remember(
+        entries, searchQuery, sortMode, updatesTick, downloadedKeys,
+        selectedCategoryFilter, categoryMangaIds, mangaIdsWithAnyCategory,
+    ) {
         entries
             .filter { entry ->
                 searchQuery.isBlank() || entry.title.contains(searchQuery, ignoreCase = true)
@@ -183,6 +251,14 @@ fun LibraryScreen(
             .filter { entry ->
                 val keys = downloadedKeys ?: return@filter true
                 "${entry.sourceId}:${entry.mangaUrl}" in keys
+            }
+            .filter { entry ->
+                when (selectedCategoryFilter) {
+                    CATEGORY_FILTER_ALL -> true
+                    CATEGORY_FILTER_DEFAULT -> entry.id !in mangaIdsWithAnyCategory
+                    else -> selectedCategoryId == null ||
+                        entry.id in (categoryMangaIds[selectedCategoryId] ?: emptySet())
+                }
             }
             .let { list ->
                 when (sortMode) {
@@ -199,10 +275,10 @@ fun LibraryScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Library") },
+                title = { Text(t("library_title")) },
                 actions = {
                     IconButton(onClick = ::refresh, enabled = entries.isNotEmpty() && !refreshing) {
-                        Icon(Icons.Filled.Refresh, contentDescription = "Check for updates")
+                        Icon(Icons.Filled.Refresh, contentDescription = t("action_check_for_updates"))
                     }
                 },
             )
@@ -214,13 +290,13 @@ fun LibraryScreen(
                     CircularProgressIndicator()
                 }
                 error != null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("Error loading library: $error", color = MaterialTheme.colorScheme.error)
+                    Text(t("error_loading_library", error), color = MaterialTheme.colorScheme.error)
                 }
                 entries.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("Your library is empty")
+                        Text(t("library_empty"))
                         Button(onClick = onBrowseExtensions, modifier = Modifier.padding(top = 8.dp)) {
-                            Text("Browse extensions")
+                            Text(t("library_browse_extensions"))
                         }
                     }
                 }
@@ -233,7 +309,7 @@ fun LibraryScreen(
                         OutlinedTextField(
                             value = searchQuery,
                             onValueChange = { searchQuery = it },
-                            placeholder = { Text("Search library...") },
+                            placeholder = { Text(t("library_search_hint")) },
                             leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                             modifier = Modifier.weight(1f),
                             singleLine = true,
@@ -241,7 +317,7 @@ fun LibraryScreen(
                         Spacer(Modifier.width(8.dp))
                         Box {
                             IconButton(onClick = { showSortMenu = true }) {
-                                Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "Sort")
+                                Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = t("action_sort"))
                             }
                             DropdownMenu(
                                 expanded = showSortMenu,
@@ -251,7 +327,7 @@ fun LibraryScreen(
                                     DropdownMenuItem(
                                         text = {
                                             Text(
-                                                mode.label,
+                                                t(mode.labelKey),
                                                 color = if (sortMode == mode) MaterialTheme.colorScheme.primary
                                                 else MaterialTheme.colorScheme.onSurface,
                                             )
@@ -266,9 +342,37 @@ fun LibraryScreen(
                         }
                     }
 
+                    // Category filter chips (hidden until the user has categories)
+                    if (categories.isNotEmpty()) {
+                        Row(
+                            Modifier.fillMaxWidth()
+                                .horizontalScroll(rememberScrollState())
+                                .padding(horizontal = 16.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            FilterChip(
+                                selected = selectedCategoryFilter == CATEGORY_FILTER_ALL,
+                                onClick = { selectCategoryFilter(CATEGORY_FILTER_ALL) },
+                                label = { Text(t("filter_all")) },
+                            )
+                            categories.forEach { category ->
+                                FilterChip(
+                                    selected = selectedCategoryFilter == CATEGORY_FILTER_PREFIX + category.id,
+                                    onClick = { selectCategoryFilter(CATEGORY_FILTER_PREFIX + category.id) },
+                                    label = { Text(category.name) },
+                                )
+                            }
+                            FilterChip(
+                                selected = selectedCategoryFilter == CATEGORY_FILTER_DEFAULT,
+                                onClick = { selectCategoryFilter(CATEGORY_FILTER_DEFAULT) },
+                                label = { Text(t("filter_default")) },
+                            )
+                        }
+                    }
+
                     if (filteredEntries.isEmpty()) {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("No matches found")
+                            Text(t("library_no_matches"))
                         }
                     } else {
                         LazyVerticalGrid(
@@ -327,7 +431,7 @@ fun LibraryScreen(
                                     )
                                     if (source == null) {
                                         Text(
-                                            "Extension not installed",
+                                            t("library_extension_not_installed"),
                                             style = MaterialTheme.typography.labelSmall,
                                             color = MaterialTheme.colorScheme.error,
                                         )

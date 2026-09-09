@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Superseded runs on the same ref (rapid pushes, rebased PRs) are pure wasted
+# CI minutes: keep only the latest.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # Pure JVM project (no Android SDK, no Docker, no display needed:
+    # tests that touch AWT are guarded headless-safe).
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # Wraps Gradle and caches ~/.gradle + configuration cache automatically.
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # `build` = assemble + check, and `check` depends on every module's
+      # `test` task (platform-compat, source-api has no tests, extension-loader, app).
+      - name: Build and run all tests
+        run: ./gradlew build --stacktrace
+
+      - name: Upload test reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            **/build/reports/tests/
+            **/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 7

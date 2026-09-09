@@ -7,12 +7,28 @@ import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromStream
 import kotlinx.serialization.protobuf.ProtoBuf
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import java.io.ByteArrayInputStream
 import java.util.zip.GZIPInputStream
 
 /** keiyoushi's own repo -- see https://keiyoushi.github.io for the human-facing site. */
 const val KEIYOUSHI_REPO_JSON = "https://raw.githubusercontent.com/keiyoushi/extensions/repo/repo.json"
+
+/**
+ * Rejects any catalog-derived URL that is not https before it reaches OkHttp.
+ * Catalog entries come off the wire (repo.json / index.pb / GitHub API); a
+ * plain-http URL in there is either a hostile repo or a broken one, and must
+ * never be fetched -- credentials, cookies and jar bytes would travel in clear.
+ *
+ * @return [url] unchanged when it parses as an https URL.
+ * @throws IllegalStateException when [url] is not a valid https URL.
+ */
+fun requireHttps(url: String): String {
+    val parsed = url.toHttpUrlOrNull()
+    check(parsed != null && parsed.isHttps) { "Refusing non-https extension URL: $url" }
+    return url
+}
 
 /**
  * Fetches a keiyoushi-style extension catalog.
@@ -30,12 +46,16 @@ class CatalogClient(private val client: OkHttpClient) {
     @OptIn(ExperimentalSerializationApi::class)
     suspend fun fetchCatalog(repoJsonUrl: String = KEIYOUSHI_REPO_JSON): List<CatalogExtension> =
         withContext(Dispatchers.IO) {
-            val repo = client.newCall(GET(repoJsonUrl)).execute().use { response ->
-                check(response.isSuccessful) { "Failed to fetch $repoJsonUrl: HTTP ${response.code}" }
+            val repoUrl = requireHttps(repoJsonUrl)
+            val repo = client.newCall(GET(repoUrl)).execute().use { response ->
+                check(response.isSuccessful) { "Failed to fetch $repoUrl: HTTP ${response.code}" }
                 json.decodeFromStream<LegacyExtensionRepo>(ungzipIfNeeded(response.body.bytes()))
             }
-            val indexPbUrl = repo.index_v2
-                ?: error("$repoJsonUrl has no index_v2 -- not a protobuf-catalog repo this client understands")
+            // index_v2 comes off the wire: enforce https before fetching it.
+            val indexPbUrl = requireHttps(
+                repo.index_v2
+                    ?: error("$repoUrl has no index_v2 -- not a protobuf-catalog repo this client understands"),
+            )
 
             val store = client.newCall(GET(indexPbUrl)).execute().use { response ->
                 check(response.isSuccessful) { "Failed to fetch $indexPbUrl: HTTP ${response.code}" }

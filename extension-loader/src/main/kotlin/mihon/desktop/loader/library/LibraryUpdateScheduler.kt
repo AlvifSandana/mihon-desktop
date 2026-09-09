@@ -18,7 +18,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Uses a plain JVM [ScheduledExecutorService] (no Android WorkManager). The scheduler
  * runs every [intervalMinutes] minutes (default 60). Each run iterates all library
  * entries, re-loads each extension jar from cache, calls `getMangaUpdate` on the source,
- * and records which manga have new chapters via [UpdateListener].
+ * and records which manga have new chapters. The [UpdateListener] is notified once per
+ * run with a summary, not per manga, so the UI doesn't get hammered.
  *
  * Call [start] once at app launch and [stop] on shutdown.
  */
@@ -37,10 +38,12 @@ class LibraryUpdateScheduler(
     private val _updates = java.util.concurrent.ConcurrentHashMap<String, Int>()
     val updates: Map<String, Int> get() = _updates.toMap()
 
+    @Volatile
     private var listener: UpdateListener? = null
 
+    /** Notified once per scheduler run that found updates, with the full summary. */
     fun interface UpdateListener {
-        fun onUpdatesFound(mangaKey: String, chapterCount: Int)
+        fun onUpdatesFound(updates: Map<String, Int>)
     }
 
     fun setUpdateListener(listener: UpdateListener?) {
@@ -49,12 +52,17 @@ class LibraryUpdateScheduler(
 
     /**
      * Start the periodic scheduler. No-op if already running.
+     *
+     * @param runImmediately run the first update right away instead of waiting one
+     *   full interval. Use `true` only for the app-launch start; recreations
+     *   (interval change, enable flip) should pass `false` so they don't trigger
+     *   an immediate full library refresh.
      */
-    fun start() {
+    fun start(runImmediately: Boolean = false) {
         if (running.compareAndSet(false, true)) {
             executor.scheduleWithFixedDelay(
                 ::runUpdate,
-                0, // run immediately on start
+                if (runImmediately) 0 else intervalMinutes,
                 intervalMinutes,
                 TimeUnit.MINUTES,
             )
@@ -100,7 +108,7 @@ class LibraryUpdateScheduler(
 
     private suspend fun doUpdate() {
         val entries = repository.all()
-        var updatesFound = 0
+        val newUpdates = LinkedHashMap<String, Int>()
         for (entry in entries) {
             val sources = runCatching {
                 ExtensionLoader.loadCached(entry.jarFileName).sources
@@ -129,17 +137,19 @@ class LibraryUpdateScheduler(
                 )
             }.onSuccess { freshChapters ->
                 if (freshChapters.isNotEmpty()) {
-                    val key = "${entry.sourceId}:${entry.mangaUrl}"
-                    _updates[key] = freshChapters.size
-                    listener?.onUpdatesFound(key, freshChapters.size)
-                    updatesFound++
+                    newUpdates["${entry.sourceId}:${entry.mangaUrl}"] = freshChapters.size
                 }
             }
         }
-        if (updatesFound > 0) {
+        if (newUpdates.isNotEmpty()) {
+            _updates.putAll(newUpdates)
+            // Single notification per run -- per-manga callbacks would storm the UI.
+            listener?.onUpdatesFound(newUpdates)
             NotificationManager.notify(
-                title = "Library updated",
-                message = "$updatesFound manga have new chapters",
+                "notif_library_updated_title",
+                "notif_library_updated_message",
+                newUpdates.values.sum(),
+                newUpdates.size,
             )
         }
     }

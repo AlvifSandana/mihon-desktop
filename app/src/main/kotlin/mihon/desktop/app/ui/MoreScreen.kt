@@ -4,7 +4,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -25,6 +27,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import mihon.desktop.loader.prefs.AppPreferences
+import mihon.desktop.app.i18n.t
 import androidx.compose.ui.unit.dp
 
 /**
@@ -38,6 +41,8 @@ fun MoreScreen(
     onOpenExtensions: () -> Unit,
     onSearchGlobally: () -> Unit,
     onOpenNotifications: () -> Unit,
+    onOpenCategories: () -> Unit,
+    onOpenStats: () -> Unit,
 ) {
     var downloadedOnly by remember {
         mutableStateOf(AppPreferences.getBoolean(AppPreferences.KEY_DOWNLOADED_ONLY, false))
@@ -47,12 +52,12 @@ fun MoreScreen(
     }
 
     Column(Modifier.fillMaxSize()) {
-        TopAppBar(title = { Text("More") })
+        TopAppBar(title = { Text(t("more_title")) })
 
         // ── Toggles ────────────────────────────────────────────────
         ListItem(
-            headlineContent = { Text("Downloaded only") },
-            supportingContent = { Text("Only show downloaded manga in library") },
+            headlineContent = { Text(t("downloaded_only")) },
+            supportingContent = { Text(t("downloaded_only_hint")) },
             trailingContent = {
                 Switch(checked = downloadedOnly, onCheckedChange = {
                     downloadedOnly = it
@@ -63,8 +68,8 @@ fun MoreScreen(
         HorizontalDivider()
 
         ListItem(
-            headlineContent = { Text("Incognito mode") },
-            supportingContent = { Text("Don't record reading history") },
+            headlineContent = { Text(t("incognito_mode")) },
+            supportingContent = { Text(t("incognito_hint")) },
             trailingContent = {
                 Switch(checked = incognitoMode, onCheckedChange = {
                     incognitoMode = it
@@ -77,27 +82,37 @@ fun MoreScreen(
         // ── Menu items ─────────────────────────────────────────────
         MoreMenuItem(
             icon = Icons.Filled.Search,
-            title = "Global search",
+            title = t("menu_global_search"),
             onClick = onSearchGlobally,
         )
         MoreMenuItem(
             icon = Icons.Filled.Notifications,
-            title = "Notifications",
+            title = t("menu_notifications"),
             onClick = onOpenNotifications,
         )
         MoreMenuItem(
             icon = Icons.Filled.Storage,
-            title = "Downloads",
+            title = t("menu_downloads"),
             onClick = onOpenDownloads,
         )
         MoreMenuItem(
+            icon = Icons.AutoMirrored.Filled.Label,
+            title = t("menu_categories"),
+            onClick = onOpenCategories,
+        )
+        MoreMenuItem(
+            icon = Icons.Filled.BarChart,
+            title = t("menu_statistics"),
+            onClick = onOpenStats,
+        )
+        MoreMenuItem(
             icon = Icons.Filled.Apps,
-            title = "Extensions",
+            title = t("menu_extensions"),
             onClick = onOpenExtensions,
         )
         MoreMenuItem(
             icon = Icons.Filled.Settings,
-            title = "Settings",
+            title = t("menu_settings"),
             onClick = onOpenSettings,
         )
     }

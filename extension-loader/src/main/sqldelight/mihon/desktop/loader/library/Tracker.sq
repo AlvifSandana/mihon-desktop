@@ -1,0 +1,42 @@
+CREATE TABLE tracker (
+    id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    mangaId INTEGER NOT NULL REFERENCES libraryManga(id) ON DELETE CASCADE,
+    trackerName TEXT NOT NULL,
+    remoteId TEXT NOT NULL,
+    title TEXT NOT NULL,
+    status INTEGER NOT NULL,
+    score REAL,
+    lastChapterRead REAL,
+    updatedAt INTEGER NOT NULL,
+    UNIQUE (mangaId, trackerName)
+);
+
+selectAll:
+SELECT * FROM tracker ORDER BY trackerName;
+
+selectForManga:
+SELECT * FROM tracker WHERE mangaId = ? ORDER BY trackerName;
+
+selectForMangaAndTracker:
+SELECT * FROM tracker WHERE mangaId = ? AND trackerName = ?;
+
+insertOrIgnore:
+INSERT OR IGNORE INTO tracker(mangaId, trackerName, remoteId, title, status, score, lastChapterRead, updatedAt)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+
+-- Upsert's second half: updateEntry after a 0-row insertOrIgnore would work,
+-- but update-then-insert keeps the row id stable across repeated upserts and
+-- only inserts when the (mangaId, trackerName) pair is genuinely new.
+updateEntry:
+UPDATE tracker
+SET remoteId = ?, title = ?, status = ?, score = ?, lastChapterRead = ?, updatedAt = ?
+WHERE mangaId = ? AND trackerName = ?;
+
+deleteById:
+DELETE FROM tracker WHERE id = ?;
+
+deleteForManga:
+DELETE FROM tracker WHERE mangaId = ?;
+
+deleteAll:
+DELETE FROM tracker;

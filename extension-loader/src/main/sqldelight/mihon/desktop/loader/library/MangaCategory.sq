@@ -1,0 +1,30 @@
+CREATE TABLE mangaCategory (
+    mangaId INTEGER NOT NULL REFERENCES libraryManga(id) ON DELETE CASCADE,
+    categoryId INTEGER NOT NULL REFERENCES category(id) ON DELETE CASCADE,
+    PRIMARY KEY (mangaId, categoryId)
+);
+
+insertOrIgnore:
+INSERT OR IGNORE INTO mangaCategory(mangaId, categoryId) VALUES (?, ?);
+
+deleteForManga:
+DELETE FROM mangaCategory WHERE mangaId = ?;
+
+deleteForCategory:
+DELETE FROM mangaCategory WHERE categoryId = ?;
+
+selectCategoriesForManga:
+SELECT category.id, category.name, category.sortOrder
+FROM category
+JOIN mangaCategory ON mangaCategory.categoryId = category.id
+WHERE mangaCategory.mangaId = ?
+ORDER BY category.sortOrder, category.id;
+
+selectMangaIdsForCategory:
+SELECT mangaId FROM mangaCategory WHERE categoryId = ?;
+
+selectMangaIdsWithAnyCategory:
+SELECT DISTINCT mangaId FROM mangaCategory;
+
+selectMangaIdsByCategory:
+SELECT categoryId, mangaId FROM mangaCategory;

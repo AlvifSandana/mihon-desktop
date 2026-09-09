@@ -20,25 +20,39 @@ import kotlinx.coroutines.withContext
 import mihon.desktop.loader.cache.ImageCache
 import org.jetbrains.skia.Image as SkiaImage
 
-private val imageCache = ImageCache()
+/**
+ * Single shared LRU disk cache for all network images (covers, reader pages).
+ * One instance (and one eviction budget) instead of one per screen -- two
+ * instances on the same directory would evict each other's entries and
+ * double the disk usage.
+ */
+internal val sharedImageCache = ImageCache()
 
 /**
  * Loads and decodes an image lazily, off the UI thread, keyed on [key] (typically the URL).
  * Uses an LRU disk cache to avoid re-fetching images.
- * Shows a spinner while loading, nothing on failure.
+ * Shows a spinner while loading, nothing on failure (unless [errorContent] is
+ * provided, e.g. a Retry affordance).
  */
 @Composable
-fun AsyncImage(key: Any?, modifier: Modifier = Modifier, load: suspend () -> ByteArray?) {
+fun AsyncImage(
+    key: Any?,
+    modifier: Modifier = Modifier,
+    errorContent: (@Composable (onRetry: () -> Unit) -> Unit)? = null,
+    load: suspend () -> ByteArray?,
+) {
     var bitmap by remember(key) { mutableStateOf<ImageBitmap?>(null) }
     var failed by remember(key) { mutableStateOf(false) }
+    // Bumped by errorContent's onRetry to re-run the load.
+    var attempt by remember(key) { mutableStateOf(0) }
 
-    LaunchedEffect(key) {
+    LaunchedEffect(key, attempt) {
         bitmap = null
         failed = false
 
         // Try cache first (only for string keys that look like URLs)
         val cacheKey = key as? String
-        val cached = if (cacheKey != null) imageCache.get(cacheKey) else null
+        val cached = if (cacheKey != null) sharedImageCache.get(cacheKey) else null
 
         val bytes = cached ?: withContext(Dispatchers.IO) {
             runCatching { load() }.getOrNull()
@@ -47,7 +61,7 @@ fun AsyncImage(key: Any?, modifier: Modifier = Modifier, load: suspend () -> Byt
         // Store in cache if loaded from network
         if (cached == null && bytes != null && cacheKey != null) {
             withContext(Dispatchers.IO) {
-                runCatching { imageCache.put(cacheKey, bytes) }
+                runCatching { sharedImageCache.put(cacheKey, bytes) }
             }
         }
 
@@ -70,6 +84,8 @@ fun AsyncImage(key: Any?, modifier: Modifier = Modifier, load: suspend () -> Byt
             )
         } else if (!failed) {
             CircularProgressIndicator()
+        } else if (errorContent != null) {
+            errorContent { attempt++ }
         }
     }
 }

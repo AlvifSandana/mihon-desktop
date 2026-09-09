@@ -9,14 +9,18 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDownload
@@ -24,8 +28,11 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SelectAll
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -48,6 +55,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -59,6 +67,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import eu.kanade.tachiyomi.network.GET
+import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
@@ -66,31 +75,34 @@ import eu.kanade.tachiyomi.source.online.HttpSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import mihon.desktop.loader.download.DownloadJobState
 import mihon.desktop.loader.download.DownloadManager
+import mihon.desktop.loader.download.DownloadQueue
+import mihon.desktop.loader.library.Category
+import mihon.desktop.loader.library.CategoryRepository
 import mihon.desktop.loader.library.LibraryRepository
 import mihon.desktop.loader.library.ReadingProgress
 import mihon.desktop.loader.log.Logger
+import mihon.desktop.loader.tracker.TrackEntry
+import mihon.desktop.loader.tracker.TrackStatus
+import mihon.desktop.loader.tracker.TrackUpdate
+import mihon.desktop.loader.tracker.Tracker
+import mihon.desktop.loader.tracker.TrackerManager
+import mihon.desktop.loader.tracker.TrackerRepository
+import mihon.desktop.app.i18n.Strings
+import mihon.desktop.app.i18n.t
 import java.text.DateFormat
 import java.util.Date
 
-private enum class ChapterSortMode(val label: String) {
-    SOURCE_ORDER("Source order"),
-    NAME_ASC("Name (A-Z)"),
-    NAME_DESC("Name (Z-A)"),
-    DATE_NEWEST("Newest first"),
-    DATE_OLDEST("Oldest first"),
+private enum class ChapterSortMode(val labelKey: String) {
+    SOURCE_ORDER("chapter_sort_source"),
+    NAME_ASC("chapter_sort_name_az"),
+    NAME_DESC("chapter_sort_name_za"),
+    DATE_NEWEST("chapter_sort_newest"),
+    DATE_OLDEST("chapter_sort_oldest"),
 }
 
 private const val TAG = "MangaDetailScreen"
-
-/** Extracts the chapter number from a chapter name (e.g. "Chapter 12.5" -> 12.5, "Ch 1" -> 1). */
-private fun SChapter.chapterNumber(): Double? {
-    val name = this.name
-    // Match "Chapter 12.5", "Ch 12.5", "Ch. 12.5", etc.
-    val match = Regex("""[Cc]h(?:apter|\.)?\s*([\d.]+)""").find(name)
-        ?: Regex("""\b([\d]+(?:\.[\d]+)?)\b""").find(name)
-    return match?.groupValues?.get(1)?.toDoubleOrNull()
-}
 
 /** Fetches full details + chapter list for one manga and lets the user pick a chapter to read. */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -100,11 +112,17 @@ fun MangaDetailScreen(
     source: Source,
     manga: SManga,
     onChapterSelected: (chapters: List<SChapter>, chapterIndex: Int, initialPageIndex: Int) -> Unit,
+    onOpenSourceSettings: () -> Unit = {},
     onBack: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val repository = remember { LibraryRepository() }
+    val categoryRepository = remember { CategoryRepository() }
     val downloadManager = remember { DownloadManager() }
+    // Chapter downloads go through the shared queue (parallel workers, retry,
+    // pause/cancel in the Downloads screen); this screen only observes state.
+    val downloadQueue = remember { DownloadQueue.shared }
+    val queueJobs by downloadQueue.jobs.collectAsState()
 
     var detail by remember(manga) { mutableStateOf(manga) }
     var chapters by remember(manga) { mutableStateOf(listOf<SChapter>()) }
@@ -114,6 +132,7 @@ fun MangaDetailScreen(
     var progress by remember(manga) { mutableStateOf<ReadingProgress?>(null) }
     var sortMode by remember(manga) { mutableStateOf(ChapterSortMode.SOURCE_ORDER) }
     var showSortMenu by remember(manga) { mutableStateOf(false) }
+    var showOverflowMenu by remember(manga) { mutableStateOf(false) }
     var selectionMode by remember(manga) { mutableStateOf(false) }
     var filterUnreadOnly by remember(manga) { mutableStateOf(false) }
     var filterDownloadedOnly by remember(manga) { mutableStateOf(false) }
@@ -126,10 +145,18 @@ fun MangaDetailScreen(
     // Go-to-chapter dialog
     var showGoToDialog by remember(manga) { mutableStateOf(false) }
 
+    // Edit-categories dialog (library manga only)
+    var showEditCategories by remember(manga) { mutableStateOf(false) }
+
+    // ── Tracking ──────────────────────────────────────────────────────────
+    val trackerManager = remember { TrackerManager.shared() }
+    val trackerRepository = remember { TrackerRepository() }
+    var trackEntries by remember(manga) { mutableStateOf<List<TrackEntry>>(emptyList()) }
+    var trackerLoginStates by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
+    var trackSearchFor by remember { mutableStateOf<Tracker?>(null) }
+
     // Track download state per chapter URL
     val downloadedMap = remember { mutableStateMapOf<String, Boolean>() }
-    val downloadingSet = remember { mutableStateMapOf<String, Boolean>() }
-    val downloadProgress = remember { mutableStateMapOf<String, Pair<Int, Int>>() }
     // Track read state per chapter URL
     val readMap = remember { mutableStateMapOf<String, Boolean>() }
 
@@ -174,7 +201,16 @@ fun MangaDetailScreen(
         loading = false
     }
 
-    val sortedChapters = remember(chapters, sortMode, filterUnreadOnly, filterDownloadedOnly, filterMinChapter, filterMaxChapter, readMap, downloadedMap) {
+    val sortedChapters = remember(
+        chapters,
+        sortMode,
+        filterUnreadOnly,
+        filterDownloadedOnly,
+        filterMinChapter,
+        filterMaxChapter,
+        readMap,
+        downloadedMap,
+    ) {
         chapters
             .let { list ->
                 if (filterUnreadOnly) list.filter { readMap[it.url] != true } else list
@@ -187,7 +223,7 @@ fun MangaDetailScreen(
                 val maxCh = filterMaxChapter.toDoubleOrNull()
                 if (minCh != null || maxCh != null) {
                     list.filter { ch ->
-                        val num = ch.chapterNumber()
+                        val num = ch.parseChapterNameNumber()
                         num != null && (minCh == null || num >= minCh) && (maxCh == null || num <= maxCh)
                     }
                 } else {
@@ -203,6 +239,43 @@ fun MangaDetailScreen(
                     ChapterSortMode.DATE_OLDEST -> list.sortedBy { it.date_upload }
                 }
             }
+    }
+
+    // Queue completions flip this manga's chapters to "Downloaded" live.
+    LaunchedEffect(queueJobs) {
+        queueJobs.forEach { job ->
+            if (job.sourceId == source.id && job.mangaUrl == manga.url && job.state == DownloadJobState.COMPLETED) {
+                downloadedMap[job.chapterUrl] = true
+            }
+        }
+    }
+
+    // Tracker bindings (library manga only): load local rows, then silently
+    // refresh each from the remote so the card shows the tracker's view.
+    LaunchedEffect(manga, isFavorite) {
+        trackerLoginStates = trackerManager.trackers.associate { it.name to it.isLoggedIn() }
+        if (!isFavorite) {
+            trackEntries = emptyList()
+        } else {
+            val local = trackerRepository.forManga(source.id, manga.url)
+            val refreshed = local.map { entry ->
+                val tracker = trackerManager.byName(entry.trackerName)
+                if (tracker?.isLoggedIn() == true) {
+                    runCatching { tracker.refresh(entry) }.getOrNull() ?: entry
+                } else {
+                    entry
+                }
+            }
+            trackEntries = refreshed
+            // Persist rows whose remote state moved (status/score/chapter).
+            refreshed.zip(local).forEach { (fresh, old) ->
+                if (fresh.status != old.status || fresh.score != old.score ||
+                    fresh.lastChapterRead != old.lastChapterRead
+                ) {
+                    runCatching { trackerRepository.upsert(fresh) }
+                }
+            }
+        }
     }
 
     fun toggleFavorite() {
@@ -238,23 +311,40 @@ fun MangaDetailScreen(
         }
     }
 
-    fun downloadChapter(chapter: SChapter) {
+    /**
+     * Enqueues one chapter into the shared download queue. The row's queued/
+     * downloading state comes from [queueJobs]; completion updates
+     * [downloadedMap] below, and the queue posts one summary notification per
+     * drained batch (no per-chapter notification from this screen).
+     */
+    fun enqueueDownload(chapter: SChapter) {
         scope.launch {
-            downloadingSet[chapter.url] = true
-            downloadProgress.remove(chapter.url)
-            runCatching {
-                downloadManager.downloadChapter(source, manga.url, chapter) { current, total ->
-                    downloadProgress[chapter.url] = current to total
-                }
-            }.onSuccess {
-                downloadedMap[chapter.url] = true
-            }.onFailure {
-                Logger.e(TAG, "Download failed: ${it.message}", it)
-                error = "Download failed: ${it.message ?: it}"
-            }
-            downloadingSet.remove(chapter.url)
-            downloadProgress.remove(chapter.url)
+            downloadQueue.enqueue(
+                source = source,
+                mangaUrl = manga.url,
+                chapter = chapter,
+                mangaTitle = detail.title,
+                thumbnailUrl = detail.thumbnail_url,
+            )
         }
+    }
+
+    /** Enqueues every selected chapter that isn't downloaded yet. */
+    fun downloadSelected() {
+        val targets = sortedChapters.filter { selectedChapters[it.url] == true && downloadedMap[it.url] != true }
+        if (targets.isNotEmpty()) {
+            scope.launch {
+                downloadQueue.enqueueAll(
+                    source = source,
+                    mangaUrl = manga.url,
+                    chapters = targets,
+                    mangaTitle = detail.title,
+                    thumbnailUrl = detail.thumbnail_url,
+                )
+            }
+        }
+        selectionMode = false
+        selectedChapters.clear()
     }
 
     fun deleteChapter(chapter: SChapter) {
@@ -273,6 +363,11 @@ fun MangaDetailScreen(
             } else {
                 repository.markAsRead(source.id, manga.url, chapter.url, chapter.name)
                 readMap[chapter.url] = true
+                // Push progress to bound trackers (fire-and-forget; skips
+                // itself in incognito mode and on regressions).
+                chapter.chapterNumberOrFallback()?.let { num ->
+                    runCatching { trackerManager.pushChapterRead(source.id, manga.url, num) }
+                }
             }
         }
     }
@@ -281,18 +376,10 @@ fun MangaDetailScreen(
         scope.launch {
             repository.markAllAsRead(source.id, manga.url, chapters)
             for (ch in chapters) readMap[ch.url] = true
-        }
-    }
-
-    fun downloadSelected() {
-        scope.launch {
-            for (ch in sortedChapters) {
-                if (selectedChapters[ch.url] == true && downloadedMap[ch.url] != true) {
-                    downloadChapter(ch)
-                }
+            // One push with the highest chapter number covers all trackers.
+            chapters.mapNotNull { it.chapterNumberOrFallback() }.maxOrNull()?.let { num ->
+                runCatching { trackerManager.pushChapterRead(source.id, manga.url, num) }
             }
-            selectionMode = false
-            selectedChapters.clear()
         }
     }
 
@@ -302,7 +389,7 @@ fun MangaDetailScreen(
                 title = {
                     if (selectionMode) {
                         val count = selectedChapters.count { it.value }
-                        Text("$count selected")
+                        Text(t("common_selected_count", count))
                     } else {
                         Text(detail.title)
                     }
@@ -316,7 +403,7 @@ fun MangaDetailScreen(
                             onBack()
                         }
                     }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = t("common_back"))
                     }
                 },
                 actions = {
@@ -328,23 +415,55 @@ fun MangaDetailScreen(
                                 selectedChapters[ch.url] = !allSelected
                             }
                         }) {
-                            Icon(Icons.Filled.SelectAll, contentDescription = "Select all")
+                            Icon(Icons.Filled.SelectAll, contentDescription = t("action_select_all"))
                         }
                         IconButton(onClick = { downloadSelected() }) {
-                            Icon(Icons.Filled.CloudDownload, contentDescription = "Download selected")
+                            Icon(Icons.Filled.CloudDownload, contentDescription = t("action_download_selected"))
                         }
                     } else {
                         IconButton(onClick = { showSortMenu = true }) {
-                            Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "Sort")
+                            Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = t("action_sort"))
                         }
                         IconButton(onClick = { selectionMode = true }) {
-                            Icon(Icons.Filled.Check, contentDescription = "Select chapters")
+                            Icon(Icons.Filled.Check, contentDescription = t("action_select_chapters"))
                         }
                         IconButton(onClick = ::toggleFavorite) {
                             Icon(
                                 if (isFavorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
-                                contentDescription = if (isFavorite) "Remove from library" else "Add to library",
+                                contentDescription = if (isFavorite) t("action_remove_from_library") else t("action_add_to_library"),
                             )
+                        }
+                        if (source is ConfigurableSource || isFavorite) {
+                            Box {
+                                IconButton(onClick = { showOverflowMenu = true }) {
+                                    Icon(Icons.Filled.MoreVert, contentDescription = t("action_more_options"))
+                                }
+                                DropdownMenu(
+                                    expanded = showOverflowMenu,
+                                    onDismissRequest = { showOverflowMenu = false },
+                                ) {
+                                    if (isFavorite) {
+                                        DropdownMenuItem(
+                                            text = { Text(t("detail_edit_categories")) },
+                                            leadingIcon = { Icon(Icons.AutoMirrored.Filled.Label, contentDescription = null) },
+                                            onClick = {
+                                                showOverflowMenu = false
+                                                showEditCategories = true
+                                            },
+                                        )
+                                    }
+                                    if (source is ConfigurableSource) {
+                                        DropdownMenuItem(
+                                            text = { Text(t("action_source_settings")) },
+                                            leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+                                            onClick = {
+                                                showOverflowMenu = false
+                                                onOpenSourceSettings()
+                                            },
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 },
@@ -361,7 +480,7 @@ fun MangaDetailScreen(
                     DropdownMenuItem(
                         text = {
                             Text(
-                                mode.label,
+                                t(mode.labelKey),
                                 color = if (sortMode == mode) MaterialTheme.colorScheme.primary
                                 else MaterialTheme.colorScheme.onSurface,
                             )
@@ -384,19 +503,19 @@ fun MangaDetailScreen(
                         FilterChip(
                             selected = filterUnreadOnly,
                             onClick = { filterUnreadOnly = !filterUnreadOnly },
-                            label = { Text("Unread") },
+                            label = { Text(t("filter_unread")) },
                         )
                         FilterChip(
                             selected = filterDownloadedOnly,
                             onClick = { filterDownloadedOnly = !filterDownloadedOnly },
-                            label = { Text("Downloaded") },
+                            label = { Text(t("filter_downloaded")) },
                         )
                         if (filterUnreadOnly || filterDownloadedOnly) {
                             TextButton(onClick = {
                                 filterUnreadOnly = false
                                 filterDownloadedOnly = false
                             }) {
-                                Text("Clear", style = MaterialTheme.typography.labelSmall)
+                                Text(t("filter_clear"), style = MaterialTheme.typography.labelSmall)
                             }
                         }
                     }
@@ -413,7 +532,7 @@ fun MangaDetailScreen(
                             value = filterMinChapter,
                             onValueChange = { filterMinChapter = it.filter { c -> c.isDigit() || c == '.' } },
                             modifier = Modifier.weight(1f),
-                            label = { Text("Ch. min") },
+                            label = { Text(t("detail_ch_min")) },
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                         )
@@ -422,12 +541,12 @@ fun MangaDetailScreen(
                             value = filterMaxChapter,
                             onValueChange = { filterMaxChapter = it.filter { c -> c.isDigit() || c == '.' } },
                             modifier = Modifier.weight(1f),
-                            label = { Text("Ch. max") },
+                            label = { Text(t("detail_ch_max")) },
                             singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                         )
                         TextButton(onClick = { showGoToDialog = true }) {
-                            Text("Go to ch.")
+                            Text(t("detail_go_to_ch"))
                         }
                     }
 
@@ -441,7 +560,7 @@ fun MangaDetailScreen(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Text(
-                                "${sortedChapters.size} of ${chapters.size} chapters",
+                                t("detail_filter_info", sortedChapters.size, chapters.size),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -449,7 +568,7 @@ fun MangaDetailScreen(
                                 filterMinChapter = ""
                                 filterMaxChapter = ""
                             }) {
-                                Text("Clear ch. filter", style = MaterialTheme.typography.labelSmall)
+                                Text(t("detail_clear_ch_filter"), style = MaterialTheme.typography.labelSmall)
                             }
                         }
                     }
@@ -482,7 +601,7 @@ fun MangaDetailScreen(
                                     modifier = Modifier.size(16.dp),
                                 )
                                 Spacer(Modifier.width(4.dp))
-                                Text("Mark all as read", style = MaterialTheme.typography.labelSmall)
+                                Text(t("detail_mark_all_read"), style = MaterialTheme.typography.labelSmall)
                             }
                         }
                     }
@@ -491,7 +610,7 @@ fun MangaDetailScreen(
 
             if (error != null) {
                 Text(
-                    "Error: $error",
+                    t("common_error_prefix", error),
                     color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.padding(8.dp),
                 )
@@ -510,8 +629,52 @@ fun MangaDetailScreen(
                         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Filled.PlayArrow, contentDescription = null)
                             Column(Modifier.padding(start = 8.dp)) {
-                                Text("Continue reading", style = MaterialTheme.typography.labelMedium)
+                                Text(t("detail_continue_reading"), style = MaterialTheme.typography.labelMedium)
                                 Text(savedProgress.chapterName, style = MaterialTheme.typography.bodyMedium)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Tracking card: one row per logged-in tracker -- a "Track"
+            // button when unbound, an inline editor when bound.
+            if (isFavorite && !selectionMode && trackerManager.trackers.any { trackerLoginStates[it.name] == true }) {
+                Card(Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(t("tracking_title"), style = MaterialTheme.typography.titleSmall)
+                        for (tracker in trackerManager.trackers) {
+                            if (trackerLoginStates[tracker.name] != true) continue
+                            val entry = trackEntries.firstOrNull { it.trackerName == tracker.name }
+                            if (entry == null) {
+                                Row(
+                                    Modifier.fillMaxWidth().padding(top = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        prettyTrackerName(tracker.name),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    TextButton(onClick = { trackSearchFor = tracker }) { Text(t("track_action")) }
+                                }
+                            } else {
+                                TrackEntryEditor(
+                                    tracker = tracker,
+                                    entry = entry,
+                                    onUpdated = { updated ->
+                                        scope.launch {
+                                            val stored = trackerRepository.upsert(updated)
+                                            trackEntries = trackEntries.map { if (it.id == stored.id) stored else it }
+                                        }
+                                    },
+                                    onRemoved = {
+                                        scope.launch {
+                                            runCatching { trackerRepository.delete(entry.id) }
+                                            trackEntries = trackEntries.filterNot { it.id == entry.id }
+                                        }
+                                    },
+                                )
                             }
                         }
                     }
@@ -529,10 +692,23 @@ fun MangaDetailScreen(
                     items(sortedChapters, key = { it.url }) { chapter ->
                         val originalIndex = chapters.indexOf(chapter)
                         val isDownloaded = downloadedMap[chapter.url] == true
-                        val isDownloading = downloadingSet[chapter.url] == true
+                        // Queue state for this chapter: active job (queued or
+                        // running) drives the row; a FAILED job surfaces the
+                        // error and lets the download button requeue it.
+                        // mangaUrl is part of the match: relative chapter URLs
+                        // collide across manga in the shared queue.
+                        val activeJob = queueJobs.firstOrNull {
+                            it.sourceId == source.id && it.mangaUrl == manga.url &&
+                                it.chapterUrl == chapter.url &&
+                                (it.state == DownloadJobState.QUEUED || it.state == DownloadJobState.RUNNING)
+                        }
+                        val failedJob = queueJobs.lastOrNull {
+                            it.sourceId == source.id && it.mangaUrl == manga.url &&
+                                it.chapterUrl == chapter.url && it.state == DownloadJobState.FAILED
+                        }
+                        val isDownloading = activeJob != null
                         val isRead = readMap[chapter.url] == true
                         val isSelected = selectedChapters[chapter.url] == true
-                        val prog = downloadProgress[chapter.url]
 
                         ListItem(
                             headlineContent = {
@@ -550,28 +726,42 @@ fun MangaDetailScreen(
                                         }
                                         if (isDownloaded) {
                                             Text(
-                                                " · Downloaded",
+                                                " · " + t("detail_marker_downloaded"),
                                                 color = MaterialTheme.colorScheme.primary,
                                                 style = MaterialTheme.typography.labelSmall,
                                             )
                                         }
                                         if (isRead) {
                                             Text(
-                                                " · Read",
+                                                " · " + t("detail_marker_read"),
                                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                                                 style = MaterialTheme.typography.labelSmall,
                                             )
                                         }
+                                        if (activeJob?.state == DownloadJobState.QUEUED) {
+                                            Text(
+                                                " · " + t("detail_marker_queued"),
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                style = MaterialTheme.typography.labelSmall,
+                                            )
+                                        }
                                     }
-                                    if (isDownloading && prog != null) {
-                                        val (current, total) = prog
+                                    val job = activeJob
+                                    if (job?.state == DownloadJobState.RUNNING && job.pagesTotal > 0) {
                                         LinearProgressIndicator(
-                                            progress = { current.toFloat() / total.coerceAtLeast(1).toFloat() },
+                                            progress = { job.pagesDone.toFloat() / job.pagesTotal.toFloat() },
                                             modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
                                         )
                                         Text(
-                                            "$current / $total pages",
+                                            t("common_pages_progress", job.pagesDone, job.pagesTotal),
                                             style = MaterialTheme.typography.labelSmall,
+                                        )
+                                    }
+                                    failedJob?.let {
+                                        Text(
+                                            t("detail_download_failed", it.error ?: Strings.get("common_unknown_error")),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.error,
                                         )
                                     }
                                 }
@@ -588,7 +778,7 @@ fun MangaDetailScreen(
                                     IconButton(
                                         onClick = { onChapterSelected(chapters, originalIndex, 0) },
                                     ) {
-                                        Icon(Icons.Filled.PlayArrow, contentDescription = "Read")
+                                        Icon(Icons.Filled.PlayArrow, contentDescription = t("action_read"))
                                     }
                                 }
                             },
@@ -600,7 +790,7 @@ fun MangaDetailScreen(
                                         IconButton(onClick = { toggleRead(chapter) }) {
                                             Icon(
                                                 if (isRead) Icons.Filled.CheckCircle else Icons.Filled.Check,
-                                                contentDescription = if (isRead) "Mark unread" else "Mark read",
+                                                contentDescription = if (isRead) t("action_mark_unread") else t("action_mark_read"),
                                                 tint = if (isRead) MaterialTheme.colorScheme.primary
                                                 else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                                             )
@@ -611,14 +801,14 @@ fun MangaDetailScreen(
                                             IconButton(onClick = { deleteChapter(chapter) }) {
                                                 Icon(
                                                     Icons.Filled.Delete,
-                                                    contentDescription = "Delete download",
+                                                    contentDescription = t("action_delete_download"),
                                                 )
                                             }
                                         } else {
-                                            IconButton(onClick = { downloadChapter(chapter) }) {
+                                            IconButton(onClick = { enqueueDownload(chapter) }) {
                                                 Icon(
                                                     Icons.Filled.CloudDownload,
-                                                    contentDescription = "Download",
+                                                    contentDescription = t("action_download"),
                                                 )
                                             }
                                         }
@@ -642,11 +832,11 @@ fun MangaDetailScreen(
                 showGoToDialog = false
                 goToError = null
             },
-            title = { Text("Go to chapter") },
+            title = { Text(t("goto_title")) },
             text = {
                 Column {
                     Text(
-                        "Enter chapter number (1-${chapters.size})",
+                        t("goto_hint", chapters.size),
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     OutlinedTextField(
@@ -667,21 +857,21 @@ fun MangaDetailScreen(
                 TextButton(onClick = {
                     val num = goToInput.toDoubleOrNull()
                     if (num == null) {
-                        goToError = "Invalid number"
+                        goToError = Strings.get("goto_invalid_number")
                         return@TextButton
                     }
                     // Find the chapter with the closest chapter number
                     val match = sortedChapters.minByOrNull { ch ->
-                        val chNum = ch.chapterNumber() ?: Double.MAX_VALUE
+                        val chNum = ch.parseChapterNameNumber() ?: Double.MAX_VALUE
                         kotlin.math.abs(chNum - num)
                     }
                     if (match == null) {
-                        goToError = "No chapters found"
+                        goToError = Strings.get("goto_no_chapters")
                         return@TextButton
                     }
-                    val chNum = match.chapterNumber()
+                    val chNum = match.parseChapterNameNumber()
                     if (chNum == null || chNum != num) {
-                        goToError = "Chapter $num not found. Closest: Ch. $chNum"
+                        goToError = Strings.get("goto_not_found", num, chNum)
                         return@TextButton
                     }
                     val idx = sortedChapters.indexOf(match)
@@ -690,7 +880,7 @@ fun MangaDetailScreen(
                     goToError = null
                     onChapterSelected(chapters, originalIdx, 0)
                 }) {
-                    Text("Go")
+                    Text(t("common_go"))
                 }
             },
             dismissButton = {
@@ -698,16 +888,328 @@ fun MangaDetailScreen(
                     showGoToDialog = false
                     goToError = null
                 }) {
-                    Text("Cancel")
+                    Text(t("common_cancel"))
                 }
             },
         )
     }
+    // Edit categories (library manga only; the overflow item only appears
+    // while isFavorite, but guard again in case favorite is toggled while open)
+    if (showEditCategories) {
+        if (isFavorite) {
+            EditCategoriesDialog(
+                categoryRepository = categoryRepository,
+                sourceId = source.id,
+                mangaUrl = manga.url,
+                onDismiss = { showEditCategories = false },
+            )
+        } else {
+            showEditCategories = false
+        }
+    }
+    // Track search: bind this manga to a remote entry on the chosen tracker.
+    // Seeds the remote with the local reading state (all read -> Completed,
+    // otherwise the highest read chapter number).
+    trackSearchFor?.let { tracker ->
+        if (isFavorite) {
+            val readChapters = chapters.filter { readMap[it.url] == true }
+            val highestRead = readChapters.mapNotNull { it.parseChapterNameNumber() }.maxOrNull()
+            val allRead = chapters.isNotEmpty() && readChapters.size == chapters.size
+            TrackSearchDialog(
+                tracker = tracker,
+                initialQuery = detail.title,
+                onDismiss = { trackSearchFor = null },
+                onBind = { hit ->
+                    val mangaId = trackerRepository.mangaIdFor(source.id, manga.url)
+                        ?: error("Manga is not in the library")
+                    val bound = tracker.bind(
+                        TrackEntry(
+                            mangaId = mangaId,
+                            trackerName = tracker.name,
+                            remoteId = hit.remoteId,
+                            title = hit.title,
+                        ),
+                        TrackUpdate(
+                            status = if (allRead) TrackStatus.COMPLETED else TrackStatus.READING,
+                            lastChapterRead = highestRead,
+                        ),
+                    )
+                    val stored = trackerRepository.upsert(bound)
+                    trackEntries = trackEntries.filterNot {
+                        it.trackerName == stored.trackerName && it.mangaId == stored.mangaId
+                    } + stored
+                },
+            )
+        } else {
+            trackSearchFor = null
+        }
+    }
+}
+
+/**
+ * Checkbox list of the user's categories for one library manga, with an inline
+ * "create category" row. Save applies the whole checked set atomically
+ * (replace, not merge).
+ */
+@Composable
+private fun EditCategoriesDialog(
+    categoryRepository: CategoryRepository,
+    sourceId: Long,
+    mangaUrl: String,
+    onDismiss: () -> Unit,
+) {
+    var allCategories by remember { mutableStateOf<List<Category>?>(null) }
+    var checked by remember { mutableStateOf<Set<Long>>(emptySet()) }
+    var newCategoryName by remember { mutableStateOf("") }
+    var newCategoryError by remember { mutableStateOf<String?>(null) }
+    var creatingCategory by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        allCategories = categoryRepository.all()
+        checked = categoryRepository.categoriesForManga(sourceId, mangaUrl).map { it.id }.toSet()
+    }
+
+    fun toggle(id: Long) {
+        checked = if (id in checked) checked - id else checked + id
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(t("edit_categories_title")) },
+        text = {
+            Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {
+                val cats = allCategories
+                when {
+                    cats == null -> Box(
+                        Modifier.fillMaxWidth().padding(vertical = 16.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        CircularProgressIndicator(Modifier.size(24.dp))
+                    }
+                    cats.isEmpty() -> Text(
+                        t("edit_categories_empty"),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    else -> cats.forEach { category ->
+                        Row(
+                            Modifier.fillMaxWidth()
+                                .clickable { toggle(category.id) }
+                                .padding(vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(
+                                checked = category.id in checked,
+                                onCheckedChange = { toggle(category.id) },
+                            )
+                            Text(category.name)
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                // Inline "add new category" -- creates it and checks it right away
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = newCategoryName,
+                        onValueChange = {
+                            newCategoryName = it
+                            newCategoryError = null
+                        },
+                        label = { Text(t("new_category")) },
+                        singleLine = true,
+                        isError = newCategoryError != null,
+                        supportingText = newCategoryError?.let { err ->
+                            { Text(err, color = MaterialTheme.colorScheme.error) }
+                        },
+                        modifier = Modifier.weight(1f),
+                    )
+                    IconButton(
+                        onClick = {
+                            if (creatingCategory) return@IconButton
+                            creatingCategory = true
+                            scope.launch {
+                                try {
+                                    val id = categoryRepository.create(newCategoryName)
+                                    if (id == null) {
+                                        newCategoryError = Strings.get("error_category_name")
+                                    } else {
+                                        allCategories = categoryRepository.all()
+                                        checked = checked + id
+                                        newCategoryName = ""
+                                    }
+                                } finally {
+                                    creatingCategory = false
+                                }
+                            }
+                        },
+                        enabled = !creatingCategory,
+                    ) {
+                        if (creatingCategory) {
+                            CircularProgressIndicator(Modifier.size(24.dp))
+                        } else {
+                            Icon(Icons.Filled.Add, contentDescription = t("action_add_category"))
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                scope.launch {
+                    categoryRepository.setMangaCategories(sourceId, mangaUrl, checked)
+                    onDismiss()
+                }
+            }) {
+                Text(t("common_save"))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(t("common_cancel"))
+            }
+        },
+    )
 }
 
 private fun fetchThumbnailBytes(source: Source, url: String): ByteArray? {
     val httpSource = source as? HttpSource ?: return null
     return httpSource.client.newCall(GET(url, httpSource.headers)).execute().use { response ->
         if (response.isSuccessful) response.body.bytes() else null
+    }
+}
+
+@Composable
+private fun trackStatusLabel(status: TrackStatus): String = when (status) {
+    TrackStatus.READING -> t("track_status_reading")
+    TrackStatus.COMPLETED -> t("track_status_completed")
+    TrackStatus.ON_HOLD -> t("track_status_on_hold")
+    TrackStatus.DROPPED -> t("track_status_dropped")
+    TrackStatus.PLAN_TO_READ -> t("track_status_plan_to_read")
+    TrackStatus.REPEATING -> t("track_status_rereading")
+}
+
+/**
+ * Inline editor for one bound tracker: status dropdown, score (0-10) and
+ * chapter-read fields, Save pushes all three; "Remove tracking" deletes the
+ * remote entry (best-effort) and the local row.
+ */
+@Composable
+private fun TrackEntryEditor(
+    tracker: Tracker,
+    entry: TrackEntry,
+    onUpdated: (TrackEntry) -> Unit,
+    onRemoved: () -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    var status by remember(entry.id) { mutableStateOf(entry.status) }
+    var score by remember(entry.id) { mutableStateOf(entry.score?.let { "%.1f".format(java.util.Locale.ROOT, it) } ?: "") }
+    var chapter by remember(entry.id) { mutableStateOf(entry.lastChapterRead?.toInt()?.toString() ?: "") }
+    var statusMenuOpen by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    fun save() {
+        // Reject out-of-range (and unparseable) scores before pushing:
+        // remote APIs 400 on them and would leave local/remote out of sync.
+        val parsedScore = score.toDoubleOrNull()?.takeIf { it in 0.0..10.0 }
+        if (score.isNotBlank() && parsedScore == null) {
+            error = Strings.get("track_error_score")
+            return
+        }
+        busy = true
+        error = null
+        scope.launch {
+            runCatching {
+                tracker.update(
+                    entry,
+                    TrackUpdate(
+                        status = status,
+                        score = parsedScore,
+                        lastChapterRead = chapter.toDoubleOrNull(),
+                    ),
+                )
+            }.onSuccess { onUpdated(it) }
+                .onFailure { error = it.message ?: it.toString() }
+            busy = false
+        }
+    }
+
+    Column(Modifier.padding(top = 8.dp)) {
+        HorizontalDivider()
+        Row(
+            Modifier.fillMaxWidth().padding(top = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                prettyTrackerName(tracker.name),
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(enabled = !busy, onClick = {
+                busy = true
+                scope.launch {
+                    runCatching { tracker.unbind(entry) }
+                        .onFailure { Logger.w(TAG, "Remote unbind failed (removed locally anyway): ${it.message}") }
+                    busy = false
+                    onRemoved()
+                }
+            }) { Text(t("track_remove")) }
+        }
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Box {
+                TextButton(enabled = !busy, onClick = { statusMenuOpen = true }) {
+                    Text(trackStatusLabel(status))
+                }
+                DropdownMenu(expanded = statusMenuOpen, onDismissRequest = { statusMenuOpen = false }) {
+                    TrackStatus.entries.forEach { s ->
+                        DropdownMenuItem(
+                            text = { Text(trackStatusLabel(s)) },
+                            onClick = {
+                                status = s
+                                statusMenuOpen = false
+                            },
+                        )
+                    }
+                }
+            }
+            OutlinedTextField(
+                value = score,
+                onValueChange = { score = it.filter { c -> c.isDigit() || c == '.' } },
+                label = { Text(t("track_score")) },
+                singleLine = true,
+                enabled = !busy,
+                modifier = Modifier.weight(1f),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+            )
+            OutlinedTextField(
+                value = chapter,
+                onValueChange = { chapter = it.filter { c -> c.isDigit() || c == '.' } },
+                label = { Text(t("track_ch_read")) },
+                singleLine = true,
+                enabled = !busy,
+                modifier = Modifier.weight(1f),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+            )
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(enabled = !busy, onClick = ::save) { Text(t("common_save")) }
+            if (busy) {
+                CircularProgressIndicator(Modifier.size(16.dp))
+            }
+            error?.let {
+                Text(
+                    it,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            }
+        }
     }
 }

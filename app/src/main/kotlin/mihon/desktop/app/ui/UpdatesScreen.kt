@@ -39,6 +39,8 @@ import kotlinx.coroutines.withContext
 import mihon.desktop.loader.ExtensionLoader
 import mihon.desktop.loader.library.LibraryRepository
 import mihon.desktop.loader.library.UpdateHistory
+import mihon.desktop.app.i18n.Strings
+import mihon.desktop.app.i18n.t
 
 /**
  * Shows chapter updates grouped by date. Each item shows manga thumbnail, title,
@@ -78,7 +80,7 @@ fun UpdatesScreen(
     }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("Updates") }) },
+        topBar = { TopAppBar(title = { Text(t("updates_title")) }) },
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
             when {
@@ -86,13 +88,16 @@ fun UpdatesScreen(
                     CircularProgressIndicator()
                 }
                 error != null -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("Error: $error", color = MaterialTheme.colorScheme.error)
+                    Text(t("common_error_prefix", error), color = MaterialTheme.colorScheme.error)
                 }
                 updates.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("No updates yet")
+                    Text(t("updates_empty"))
                 }
                 else -> {
-                    val grouped = remember(updates) {
+                    // Tick is a remember key so the (non-composable)
+                    // formatDateGroupLabel re-runs on a live language swap.
+                    val tick = Strings.languageTick.intValue
+                    val grouped = remember(updates, tick) {
                         updates.groupBy { entry -> formatDateGroupLabel(entry.fetchedAt) }
                     }
 
@@ -152,7 +157,7 @@ fun UpdatesScreen(
                                         )
                                     }
                                     Text(
-                                        formatRelativeTime(entry.fetchedAt),
+                                        relativeTimeLabel(entry.fetchedAt),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )

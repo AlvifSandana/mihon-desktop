@@ -20,13 +20,13 @@ data class ExtensionRef(val packageName: String, val jarFileName: String, val di
 
 fun CatalogExtension.toRef() = ExtensionRef(packageName, jarFileName, name)
 
-/** Top-level navigation tabs. */
-enum class Tab(val label: String, val icon: ImageVector) {
-    Library("Library", Icons.AutoMirrored.Filled.LibraryBooks),
-    Updates("Updates", Icons.Filled.Update),
-    History("History", Icons.Filled.History),
-    Browse("Browse", Icons.Filled.Public),
-    More("More", Icons.Filled.MoreHoriz),
+/** Top-level navigation tabs. [labelKey] resolves through the i18n string table. */
+enum class Tab(val labelKey: String, val icon: ImageVector) {
+    Library("tab_library", Icons.AutoMirrored.Filled.LibraryBooks),
+    Updates("tab_updates", Icons.Filled.Update),
+    History("tab_history", Icons.Filled.History),
+    Browse("tab_browse", Icons.Filled.Public),
+    More("tab_more", Icons.Filled.MoreHoriz),
 }
 
 /** Navigation screens. */
@@ -44,7 +44,14 @@ sealed interface Screen {
     data object ExtensionManagement : Screen
     data object MultiSourceSearch : Screen
     data object Notifications : Screen
+    data object Categories : Screen
+    /** Library statistics (More → Statistics). */
+    data object Stats : Screen
+    /** Source-to-source migration for every library manga of [sourceId]. */
+    data class MigrateManga(val sourceId: Long, val sourceName: String) : Screen
     data class SourceBrowse(val extension: CatalogExtension, val source: Source) : Screen
+    /** Edit a ConfigurableSource's persisted preferences. [backTo] is null when opened from a tab. */
+    data class SourceSettings(val source: Source, val backTo: Screen? = null) : Screen
     data class MangaDetail(
         val extensionRef: ExtensionRef,
         val source: Source,

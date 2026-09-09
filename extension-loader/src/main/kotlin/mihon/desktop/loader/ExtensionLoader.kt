@@ -2,10 +2,13 @@ package mihon.desktop.loader
 
 import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.SourceFactory
+import mihon.desktop.loader.log.Logger
 import java.io.File
 import java.net.URLClassLoader
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+
+private const val TAG = "ExtensionLoader"
 
 /**
  * A loaded extension jar: its metadata plus the [Source] instance(s) it produced.
@@ -34,7 +37,21 @@ data class LoadedExtension(
  * `:source-api`/`:platform-compat` classes expect -- see [DesktopExtensionRuntime.bootstrap].
  */
 object ExtensionLoader {
-    private val extensionCacheDir = File(System.getProperty("user.home"), ".mihon-desktop/extension-cache")
+    /**
+     * Single source of truth for the extension cache directory path
+     * (`~/.mihon-desktop/extension-cache`). Every screen and downloader that
+     * needs the dir references this instead of re-spelling the path.
+     *
+     * Computed on every access (not fixed at class-init): integration tests
+     * redirect it to a temp dir via [cacheDirOverride] so they never touch
+     * the developer's real cache; production leaves it null.
+     */
+    val extensionCacheDir: File
+        get() = cacheDirOverride ?: File(System.getProperty("user.home"), ".mihon-desktop/extension-cache")
+
+    /** Test seam for [extensionCacheDir]; always null in production. */
+    @Volatile
+    internal var cacheDirOverride: File? = null
 
     /**
      * Strict allowlist: one plain file name ending in .jar. The first character
@@ -71,8 +88,13 @@ object ExtensionLoader {
         require(isValidCachedJarName(jarFileName)) {
             "Invalid extension jar file name: '$jarFileName'"
         }
-        val jarFile = File(extensionCacheDir, jarFileName)
-        val canonicalDir = extensionCacheDir.canonicalPath + File.separator
+        // Single read of the cache dir: the getter is volatile-backed (tests
+        // flip cacheDirOverride concurrently), so two reads could straddle a
+        // flip and mix the jar path of one dir with the canonical prefix of
+        // the other.
+        val cacheDir = extensionCacheDir
+        val jarFile = File(cacheDir, jarFileName)
+        val canonicalDir = cacheDir.canonicalPath + File.separator
         require(jarFile.canonicalPath.startsWith(canonicalDir)) {
             "Extension jar resolves outside the cache dir: '$jarFileName'"
         }
@@ -102,6 +124,49 @@ object ExtensionLoader {
         }
         evictedLoaders.removeAll { it.path == path }
         JarIntegrity.removeSidecar(jarFile)
+        closeExpiredEvictedLoaders()
+    }
+
+    /**
+     * Retires [jarFile] after an extension update replaced it with a new jar:
+     * silently evicts the cache entry (deferred close -- live screens keep their
+     * already-loaded classes for the grace period), removes the stale sidecar,
+     * and deletes the old file. If the deferred close still holds the file handle
+     * (Windows), falls back to an immediate close and retries the delete.
+     *
+     * No-op when [jarFile] is already gone (double-apply race, e.g. "Update all"
+     * racing a per-item click): no spurious delete-failure warning is logged.
+     *
+     * No restart is required to pick the new version up: [load] keys its cache on
+     * (path, lastModified, length), so the next load of the new jar (different
+     * file name, or same name with a new lastModified) evicts any stale entry and
+     * re-instantiates the sources. Screens already holding old [Source] instances
+     * keep them until revisited.
+     */
+    @Synchronized
+    fun invalidateForUpdate(jarFile: File) {
+        if (!jarFile.exists()) return
+        val path = jarFile.absolutePath
+        evict(path)
+        JarIntegrity.removeSidecar(jarFile)
+        if (!jarFile.delete()) {
+            // Loader still holds the file open (Windows): close hard and retry.
+            // evict() already moved the cache entry to the deferred-close list,
+            // so cache.remove() alone never finds it -- close the evicted
+            // loaders for this path explicitly.
+            cache.remove(path)?.let { entry -> runCatching { entry.classLoader.close() } }
+            val iterator = evictedLoaders.iterator()
+            while (iterator.hasNext()) {
+                val evicted = iterator.next()
+                if (evicted.path == path) {
+                    runCatching { evicted.classLoader.close() }
+                    iterator.remove()
+                }
+            }
+            if (!jarFile.delete()) {
+                Logger.w(TAG, "Could not delete replaced extension jar ${jarFile.name}")
+            }
+        }
         closeExpiredEvictedLoaders()
     }
 

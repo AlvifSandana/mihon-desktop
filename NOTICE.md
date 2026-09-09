@@ -22,6 +22,10 @@ license as [Mihon](https://github.com/mihonapp/mihon)
   `AndroidCookieJar.kt`, and `CloudflareInterceptor.kt` are original code written for this
   project — they stand in for Android APIs the extension bytecode references, and are not
   derived from Mihon or Android source.
+- **`platform-compat/`**'s `app/cash/quickjs/` package is an original reimplementation of
+  the public API surface of Cash App's `app.cash.quickjs:quickjs-jvm` binding (Apache 2.0).
+  It exists so extension jars compiled against Mihon Android link unchanged; the QuickJS
+  engine itself comes from the `io.github.dokar3:quickjs-kt-jvm` dependency (Apache 2.0).
 - **`extension-loader/`** and **`app/`** are original code written for this project,
   though `extension-loader`'s design deliberately mirrors the structure of Mihon's own
   `eu.kanade.tachiyomi.extension.util.ExtensionLoader` (see its kdoc).

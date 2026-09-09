@@ -134,6 +134,47 @@ class LibraryDatabaseMigrationTest {
     }
 
     @Test
+    fun `legacy readerPreferences gains dualPageMode and pageTransition with defaults`() {
+        val dbFile = folder.newFile("library.db")
+        exec(
+            dbFile,
+            // Shape from the previous release: webtoonMode only
+            """CREATE TABLE readerPreferences (
+                sourceId INTEGER NOT NULL, mangaUrl TEXT NOT NULL,
+                webtoonMode INTEGER NOT NULL DEFAULT 0, updatedAt INTEGER NOT NULL,
+                PRIMARY KEY (sourceId, mangaUrl))""",
+            """INSERT INTO readerPreferences VALUES (1, 'm1', 1, 111)""",
+        )
+
+        val db = LibraryDatabase.openDatabase(dbFile)
+
+        val row = db.readerPreferencesQueries.selectOne(1L, "m1").executeAsOne()
+        assertEquals("webtoonMode must survive the upgrade", 1L, row.webtoonMode)
+        assertEquals(0L, row.dualPageMode)
+        assertEquals("none", row.pageTransition)
+    }
+
+    @Test
+    fun `readerPreferences round-trips the new columns`() {
+        val dbFile = folder.newFile("library.db")
+
+        val db = LibraryDatabase.openDatabase(dbFile)
+
+        db.readerPreferencesQueries.upsert(1L, "m1", 1L, 1L, "fade", 222L)
+        var row = db.readerPreferencesQueries.selectOne(1L, "m1").executeAsOne()
+        assertEquals(1L, row.webtoonMode)
+        assertEquals(1L, row.dualPageMode)
+        assertEquals("fade", row.pageTransition)
+
+        // Upsert replaces the whole row; callers do read-modify-write.
+        db.readerPreferencesQueries.upsert(1L, "m1", 0L, 0L, "slide", 333L)
+        row = db.readerPreferencesQueries.selectOne(1L, "m1").executeAsOne()
+        assertEquals(0L, row.webtoonMode)
+        assertEquals(0L, row.dualPageMode)
+        assertEquals("slide", row.pageTransition)
+    }
+
+    @Test
     fun `repair is idempotent across repeated opens`() {
         val dbFile = folder.newFile("library.db")
         exec(
@@ -150,5 +191,48 @@ class LibraryDatabaseMigrationTest {
             val db = LibraryDatabase.openDatabase(dbFile)
             assertEquals("c1", db.readingProgressQueries.selectForManga(1L, "m1").executeAsOne().chapterUrl)
         }
+    }
+
+    @Test
+    fun `pre-category database upgrades keeping data and categories empty`() {
+        val dbFile = folder.newFile("library.db")
+        // A database as written by the previous release: all tables, no
+        // category/mangaCategory yet.
+        exec(
+            dbFile,
+            """CREATE TABLE libraryManga (
+                id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+                sourceId INTEGER NOT NULL, packageName TEXT NOT NULL, jarFileName TEXT NOT NULL,
+                extensionName TEXT NOT NULL, mangaUrl TEXT NOT NULL, title TEXT NOT NULL,
+                thumbnailUrl TEXT, author TEXT, addedAt INTEGER NOT NULL,
+                UNIQUE (sourceId, mangaUrl))""",
+            """INSERT INTO libraryManga VALUES (1, 1, 'pkg', 'pkg-v1.jar', 'Ext', 'm1', 'Manga', NULL, 'A', 111)""",
+            """INSERT INTO libraryManga VALUES (2, 2, 'pkg2', 'pkg2-v1.jar', 'Ext2', 'm2', 'Manga 2', NULL, NULL, 222)""",
+            """CREATE TABLE readingProgress (
+                sourceId INTEGER NOT NULL, mangaUrl TEXT NOT NULL, chapterUrl TEXT NOT NULL,
+                chapterName TEXT NOT NULL, pageIndex INTEGER NOT NULL, updatedAt INTEGER NOT NULL,
+                PRIMARY KEY (sourceId, mangaUrl))""",
+            """INSERT INTO readingProgress VALUES (1, 'm1', 'c9', 'Chapter 9', 4, 999)""",
+        )
+
+        val db = LibraryDatabase.openDatabase(dbFile)
+
+        // Existing data survived the upgrade untouched
+        val manga = db.libraryMangaQueries.selectAll().executeAsList()
+        assertEquals(2, manga.size)
+        assertEquals("Manga", manga.first { it.id == 1L }.title)
+        assertEquals(4L, db.readingProgressQueries.selectForManga(1L, "m1").executeAsOne().pageIndex)
+
+        // Category tables were created and start empty
+        assertTrue(db.categoryQueries.selectAll().executeAsList().isEmpty())
+        assertTrue(db.mangaCategoryQueries.selectMangaIdsWithAnyCategory().executeAsList().isEmpty())
+
+        // And the created shape works with the generated queries (round-trip)
+        db.categoryQueries.insert("Reading", 0)
+        db.mangaCategoryQueries.insertOrIgnore(1L, db.categoryQueries.selectByName("Reading").executeAsOne().id)
+        val counts = db.categoryQueries.selectAllWithCounts().executeAsList()
+        assertEquals(1, counts.size)
+        assertEquals("Reading", counts[0].name)
+        assertEquals(1L, counts[0].mangaCount)
     }
 }

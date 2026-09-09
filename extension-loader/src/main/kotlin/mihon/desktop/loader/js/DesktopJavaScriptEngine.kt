@@ -1,7 +1,7 @@
 package mihon.desktop.loader.js
 
+import app.cash.quickjs.QuickJs
 import java.io.File
-import java.util.concurrent.TimeUnit
 import javax.script.ScriptEngine
 import javax.script.ScriptEngineManager
 
@@ -9,19 +9,34 @@ import javax.script.ScriptEngineManager
  * JavaScript engine for Mihon extensions.
  *
  * Tries, in order:
- * 1. **QuickJS JVM** (`app.cash.quickjs:quickjs-jvm`) — real QuickJS, sandboxed, lightweight.
- * 2. **javax.script** (Nashorn on JDK 8-14, GraalJS if on classpath) — fallback.
- * 3. Throws [UnsupportedOperationException] if neither is available.
+ * 1. **QuickJS** — real QuickJS via JNI, sandboxed, ES2020-capable (the level of
+ *    JS support obfuscated sources and Cloudflare-bypass scripts need). Provided
+ *    by the `app.cash.quickjs` compatibility shim in :platform-compat, backed by
+ *    `io.github.dokar3:quickjs-kt-jvm` with bundled natives for Linux x64/aarch64,
+ *    macOS x64/aarch64 and Windows x64.
+ * 2. **javax.script** (GraalJS if on classpath; Nashorn existed only on JDK 8-14) — fallback.
+ * 3. Throws [UnsupportedOperationException] with the exact probe failure if neither works.
  *
- * Extensions that execute JS (e.g. for parsing page lists or image URLs) call into
- * `eu.kanade.tachiyomi.network.interceptor.quickjs.QuickJSInterceptor` which
- * delegates to this engine.
+ * Extensions that execute JS (e.g. for parsing page lists or image URLs) call the
+ * `app.cash.quickjs.QuickJs` shim in :platform-compat directly — that is the API
+ * surface they were compiled against. A stand-in for Mihon's
+ * `QuickJSInterceptor` that routes through this engine is future work.
  *
- * QuickJS is `compileOnly` — add `app.cash.quickjs:quickjs-jvm:0.9.2` to your
- * runtime classpath to enable it.
+ * FQCN compatibility: extension jars reference `app.cash.quickjs.QuickJs` by exact
+ * name (same binding Mihon Android uses); the shim in :platform-compat provides it.
+ * [QuickJsBridge] isolates those imports so that even if the shim or its native
+ * library fails to load, this class still loads and reports a clear error instead
+ * of crashing with `NoClassDefFoundError`.
+ *
+ * [QuickJs] instances are not thread-safe, so a fresh instance is created (and
+ * closed) per evaluation — QuickJS context creation is cheap and this keeps the
+ * engine safe for concurrent use from download threads.
  */
 object DesktopJavaScriptEngine {
     private enum class EngineType { QUICKJS, JAVAX_SCRIPT, NONE }
+
+    /** Why the QuickJS probe failed, if it did — surfaced in the NONE error message. */
+    private var quickJsProbeFailure: String? = null
 
     private val engineType: EngineType by lazy {
         when {
@@ -44,15 +59,18 @@ object DesktopJavaScriptEngine {
      * @param filename optional filename for error reporting
      * @return the string representation of the result
      * @throws UnsupportedOperationException if no JS engine is available
+     * @throws app.cash.quickjs.QuickJsException on JS syntax/runtime errors (QuickJS path)
      */
     fun evaluate(script: String, filename: String = "script.js"): String {
         return when (engineType) {
-            EngineType.QUICKJS -> evaluateWithQuickJs(script, filename)
-            EngineType.JAVAX_SCRIPT -> evaluateWithJavaxScript(script, filename)
+            EngineType.QUICKJS -> QuickJsBridge.evaluate(script, filename)
+            EngineType.JAVAX_SCRIPT -> evaluateWithJavaxScript(script)
             EngineType.NONE -> throw UnsupportedOperationException(
-                "No JavaScript engine available. " +
-                    "Add app.cash.quickjs:quickjs-jvm to enable QuickJS, " +
-                    "or use JDK 8-14 for Nashorn. Extension: $filename"
+                "No JavaScript engine available (script: $filename). " +
+                    "QuickJS probe failed: ${quickJsProbeFailure ?: "unknown reason"}. " +
+                    "quickjs-kt bundles natives for Linux x64/aarch64, macOS x64/aarch64 " +
+                    "and Windows x64; on other platforms add a javax.script engine " +
+                    "(e.g. GraalJS) to the classpath."
             )
         }
     }
@@ -82,38 +100,48 @@ object DesktopJavaScriptEngine {
     // --- QuickJS via app.cash.quickjs ---
 
     private fun isQuickJsAvailable(): Boolean {
+        // Loading QuickJsBridge (and from it app.cash.quickjs.QuickJs) can fail
+        // with ClassNotFoundException / NoClassDefFoundError (jar absent) or
+        // UnsatisfiedLinkError / IllegalStateException (native lib unsupported
+        // for the OS/arch) — all Throwable, none should crash the app.
         return try {
-            Class.forName("app.cash.quickjs.QuickJs")
+            quickJsProbeFailure = null
+            QuickJsBridge.probe()
             true
-        } catch (_: ClassNotFoundException) {
+        } catch (t: Throwable) {
+            quickJsProbeFailure = "${t.javaClass.simpleName}: ${t.message}"
             false
-        }
-    }
-
-    private fun evaluateWithQuickJs(script: String, filename: String): String {
-        // Use reflection to avoid compile-time dependency
-        val quickJsClass = Class.forName("app.cash.quickjs.QuickJs")
-        val createMethod = quickJsClass.getMethod("create")
-        val engine = createMethod.invoke(null)
-
-        return try {
-            val evalMethod = quickJsClass.getMethod("evaluate", String::class.java)
-            val result = evalMethod.invoke(engine, script)
-            result?.toString() ?: ""
-        } finally {
-            val closeMethod = quickJsClass.getMethod("close")
-            closeMethod.invoke(engine)
         }
     }
 
     // --- javax.script fallback ---
 
-    private fun isJavaxScriptAvailable(): Boolean {
-        return javaxEngine != null
-    }
+    private fun isJavaxScriptAvailable(): Boolean = javaxEngine != null
 
-    private fun evaluateWithJavaxScript(script: String, filename: String): String {
+    private fun evaluateWithJavaxScript(script: String): String {
         val eng = javaxEngine ?: throw UnsupportedOperationException("No javax.script engine available")
         return eng.eval(script)?.toString() ?: ""
+    }
+
+    /**
+     * Isolation boundary for `app.cash.quickjs` imports. Referenced only after
+     * [isQuickJsAvailable] succeeds (or inside its try/catch), so a missing jar
+     * degrades to a reported failure instead of a hard class-load crash of
+     * [DesktopJavaScriptEngine] itself.
+     */
+    private object QuickJsBridge {
+        /** Round-trip a trivial eval to prove both class-loading and native lib work. */
+        fun probe() {
+            QuickJs.create().use { engine ->
+                engine.evaluate("1")
+            }
+        }
+
+        fun evaluate(script: String, filename: String): String {
+            QuickJs.create().use { engine ->
+                // evaluate() returns null for JS `undefined`
+                return engine.evaluate(script, filename)?.toString() ?: ""
+            }
+        }
     }
 }

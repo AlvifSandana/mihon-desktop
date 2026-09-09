@@ -23,6 +23,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -31,6 +32,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import mihon.desktop.loader.library.NotificationManager
+import mihon.desktop.app.i18n.Strings
+import mihon.desktop.app.i18n.t
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -45,13 +48,23 @@ fun NotificationsScreen(
 ) {
     var notifications by remember { mutableStateOf(NotificationManager.notifications) }
 
+    // Stay live while the screen is open: any notify() from background work
+    // (library updates, downloads) refreshes the list immediately.
+    DisposableEffect(Unit) {
+        val listener = NotificationManager.NotificationListener {
+            notifications = NotificationManager.notifications
+        }
+        NotificationManager.addListener(listener)
+        onDispose { NotificationManager.removeListener(listener) }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Notifications") },
+                title = { Text(t("notifications_title")) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = t("common_back"))
                     }
                 },
                 actions = {
@@ -60,7 +73,7 @@ fun NotificationsScreen(
                             NotificationManager.clear()
                             notifications = emptyList()
                         }) {
-                            Icon(Icons.Filled.DeleteSweep, contentDescription = "Clear all")
+                            Icon(Icons.Filled.DeleteSweep, contentDescription = t("action_clear_all"))
                         }
                     }
                 },
@@ -76,12 +89,15 @@ fun NotificationsScreen(
                             contentDescription = null,
                             modifier = Modifier.padding(bottom = 8.dp),
                         )
-                        Text("No notifications")
+                        Text(t("notifications_empty"))
                     }
                 }
             } else {
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                     items(notifications, key = { it.id }) { notification ->
+                        // Subscribe each item to locale changes: key-based
+                        // notifications re-resolve on a live language swap.
+                        Strings.languageTick.intValue
                         Card(
                             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
                                 .clickable {
@@ -90,10 +106,10 @@ fun NotificationsScreen(
                                 },
                         ) {
                             ListItem(
-                                headlineContent = { Text(notification.title) },
+                                headlineContent = { Text(NotificationManager.displayTitle(notification)) },
                                 supportingContent = {
                                     Column {
-                                        Text(notification.message)
+                                        Text(NotificationManager.displayMessage(notification))
                                         val date = SimpleDateFormat("HH:mm:ss", Locale.US)
                                             .format(Date(notification.timestamp))
                                         Text(

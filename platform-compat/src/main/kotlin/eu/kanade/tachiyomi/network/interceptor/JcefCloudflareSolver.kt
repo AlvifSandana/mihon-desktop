@@ -50,16 +50,27 @@ class JcefCloudflareSolver(
         val latch = CountDownLatch(1)
         var solved = false
 
-        // Create a browser to solve the challenge
-        val browserClass = Class.forName("org.cef.CefClient")
-        val createBrowserMethod = browserClass.getMethod("createBrowser", String::class.java, Boolean::class.java, Boolean::class.java, Any::class.java)
-        val browser = createBrowserMethod.invoke(client, url, false, false, null)
+        // Create a browser to solve the challenge. Only the 3-arg overload
+        // (url, isOffscreenRendered, isTransparent) exists as a public
+        // exact-arity match — getMethod does no subtype resolution, so the
+        // 4-arg overload cannot be looked up with a null Object parameter.
+        val clientClass = Class.forName("org.cef.CefClient")
+        val createBrowserMethod = clientClass.getMethod(
+            "createBrowser",
+            String::class.java,
+            Boolean::class.java,
+            Boolean::class.java,
+        )
+        val browser = createBrowserMethod.invoke(client, url, false, false)
 
-        // Add a display handler to detect when the challenge is solved
-        val displayHandlerClass = Class.forName("org.cef.handler.CefDisplayHandlerAdapter")
+        // Add a display handler to detect when the challenge is solved.
+        // The proxy must implement the CefDisplayHandler *interface* —
+        // CefDisplayHandlerAdapter is an abstract class and
+        // Proxy.newProxyInstance rejects non-interface types.
+        val displayHandlerInterface = Class.forName("org.cef.handler.CefDisplayHandler")
         val displayHandler = java.lang.reflect.Proxy.newProxyInstance(
-            displayHandlerClass.classLoader,
-            arrayOf(displayHandlerClass),
+            displayHandlerInterface.classLoader,
+            arrayOf(displayHandlerInterface),
         ) { _, method, args ->
             when (method.name) {
                 "onTitleChange" -> {
@@ -71,23 +82,31 @@ class JcefCloudflareSolver(
                         solved = true
                         latch.countDown()
                     }
+                    null
                 }
                 "onLoadStart" -> {
                     // Page started loading, might be the redirect after challenge
+                    null
                 }
-                else -> null
+                // Boolean-returning handler methods (onTooltip,
+                // onConsoleMessage, onCursorChange) must return a boxed
+                // Boolean — returning null would NPE on unboxing.
+                else -> if (method.returnType == java.lang.Boolean.TYPE) false else null
             }
         }
 
-        // Register the display handler
-        val addDisplayHandlerMethod = browserClass.getMethod("addDisplayHandler", Class.forName("org.cef.handler.CefDisplayHandler"))
-        addDisplayHandlerMethod.invoke(browser, displayHandler)
+        // Register the display handler on the *client* — addDisplayHandler is
+        // a CefClient method; invoking it on the CefBrowser throws
+        // IllegalArgumentException (object is not an instance of CefClient).
+        val addDisplayHandlerMethod = clientClass.getMethod("addDisplayHandler", displayHandlerInterface)
+        addDisplayHandlerMethod.invoke(client, displayHandler)
 
         // Wait for the challenge to be solved
         val completed = latch.await(timeoutSeconds, TimeUnit.SECONDS)
 
-        // Clean up
-        val closeMethod = browserClass.getMethod("close", Boolean::class.java)
+        // Clean up: close(boolean) is declared on CefBrowser, not CefClient —
+        // look it up on the browser's own class.
+        val closeMethod = browser.javaClass.getMethod("close", Boolean::class.java)
         closeMethod.invoke(browser, true)
 
         return completed && solved
@@ -104,11 +123,22 @@ class JcefCloudflareSolver(
             val setInstallDirMethod = builderClass.getMethod("setInstallDir", File::class.java)
             setInstallDirMethod.invoke(builder, installDir)
 
-            // Configure JCEF settings
+            // Configure JCEF logging. LOGSEVERITY_DISABLE lives on the
+            // nested enum org.cef.CefSettings$LogSeverity — not on
+            // CefSettings itself. The settings object must be the builder's
+            // own (getCefSettings()); a fresh instance would be ignored by
+            // build(). jcefmaven 146.x exposes log severity as the public
+            // `log_severity` field; older builds used a
+            // setLogSeverity(LogSeverity) setter — support both.
             val settingsClass = Class.forName("org.cef.CefSettings")
-            val settings = settingsClass.getDeclaredConstructor().newInstance()
-            val setMethod = settingsClass.getMethod("setLogSeverity", settingsClass)
-            setMethod.invoke(settings, settingsClass.getField("LOGSEVERITY_DISABLE").get(null))
+            val logSeverityClass = Class.forName("org.cef.CefSettings\$LogSeverity")
+            val disableSeverity = logSeverityClass.getField("LOGSEVERITY_DISABLE").get(null)
+            val settings = builderClass.getMethod("getCefSettings").invoke(builder)
+            try {
+                settingsClass.getMethod("setLogSeverity", logSeverityClass).invoke(settings, disableSeverity)
+            } catch (_: NoSuchMethodException) {
+                settingsClass.getField("log_severity").set(settings, disableSeverity)
+            }
 
             // Build the CefApp
             val buildMethod = builderClass.getMethod("build")

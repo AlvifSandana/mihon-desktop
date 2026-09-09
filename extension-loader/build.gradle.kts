@@ -17,9 +17,15 @@ dependencies {
     api(libs.sqldelight.driver)
     api(libs.sqldelight.coroutines)
 
-    // Optional: QuickJS JVM binding for JS-executing extensions.
-    // compileOnly so the app works without it; add to runtime classpath when needed.
-    compileOnly(libs.quickjs.jvm)
+    // QuickJS for JS-executing extensions (obfuscated sources, CF-bypass
+    // scripts). The `app.cash.quickjs.QuickJs` API that extension jars link
+    // against is provided by the compatibility shim in :platform-compat
+    // (backed by io.github.dokar3:quickjs-kt-jvm) — no extra dependency here.
+
+    // Protobuf wire primitives for the hand-written Mihon `.tachibk` codec
+    // (backup/tachibk). Only CodedInputStream/CodedOutputStream are used —
+    // no generated messages, no protoc plugin.
+    implementation(libs.protobuf.java)
 
     // Optional: JCEF for Cloudflare bypass.
     // compileOnly so the app works without it; natives are ~100MB per platform.

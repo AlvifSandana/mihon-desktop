@@ -13,6 +13,7 @@ import javax.xml.parsers.DocumentBuilderFactory
  */
 data class ExtensionMetadata(
     val packageName: String,
+    val versionCode: Long?,
     val versionName: String?,
     val name: String?,
     val sourceClass: String,
@@ -34,10 +35,24 @@ object ExtensionMetadataReader {
                 ?: error("No AndroidManifest.xml in $jarFile -- is this a keiyoushi/Mihon extension jar?")
 
             val doc = jar.getInputStream(entry).use { input ->
-                DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(input)
+                // XXE hardening: the manifest comes from a downloaded jar, so a
+                // hostile one must not be able to pull in local files or remote
+                // entities via DOCTYPE/ENTITY. Real extension manifests never
+                // use a DTD, so doctypes are rejected outright.
+                val factory = DocumentBuilderFactory.newInstance()
+                runCatching {
+                    factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+                    factory.setFeature("http://xml.org/sax/features/external-general-entities", false)
+                    factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false)
+                }
+                factory.isXIncludeAware = false
+                factory.isExpandEntityReferences = false
+                factory.newDocumentBuilder().parse(input)
             }
 
             val packageName = doc.documentElement.getAttribute("package")
+            val versionCode = doc.documentElement.getAttribute("android:versionCode")
+                .toLongOrNull()
             val versionName = doc.documentElement.getAttribute("android:versionName").ifBlank { null }
 
             val metaData = mutableMapOf<String, String>()
@@ -54,6 +69,7 @@ object ExtensionMetadataReader {
 
             return ExtensionMetadata(
                 packageName = packageName,
+                versionCode = versionCode,
                 versionName = versionName,
                 name = metaData[META_NAME],
                 sourceClass = sourceClass,
